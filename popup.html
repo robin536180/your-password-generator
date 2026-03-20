@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>密码生成器</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="label">选择密码类型</div>
+      <div class="type-selector">
+        <button class="type-btn active" data-type="random">🔀 随机</button>
+        <button class="type-btn" data-type="memorable">💡 容易记住</button>
+        <button class="type-btn" data-type="pin"># PIN</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="label">自定义新密码</div>
+      <hr class="divider">
+      
+      <div class="length-control">
+        <div class="label-inline">字<br>符</div>
+        <input type="range" id="length-slider" class="slider" min="8" max="100" value="20">
+        <input type="number" id="length-input" class="number-input" min="8" max="100" value="20">
+      </div>
+
+      <hr class="divider">
+
+      <!-- Random Options -->
+      <div id="options-random" class="options-container">
+        <div class="option-row">
+          <span class="option-label">数字</span>
+          <label class="switch">
+            <input type="checkbox" id="opt-numbers" checked>
+            <span class="slider-round"></span>
+          </label>
+        </div>
+        <div class="option-row">
+          <span class="option-label">符号</span>
+          <label class="switch">
+            <input type="checkbox" id="opt-symbols">
+            <span class="slider-round"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Memorable Options -->
+      <div id="options-memorable" class="options-container hidden">
+        <div class="option-row">
+          <span class="option-label">首字母大写</span>
+          <label class="switch">
+            <input type="checkbox" id="opt-capitalize">
+            <span class="slider-round"></span>
+          </label>
+        </div>
+        <div class="option-row">
+          <span class="option-label">使用完整单词</span>
+          <label class="switch">
+            <input type="checkbox" id="opt-fullwords" checked>
+            <span class="slider-round"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- PIN Options (Empty) -->
+      <div id="options-pin" class="options-container hidden"></div>
+
+      <hr class="divider">
+    </div>
+
+    <div class="section">
+      <div class="label">生成密码</div>
+      <div class="password-display">
+        <span id="password-output">7obvNFGc6veakKyGERfY</span>
+      </div>
+      
+      <div class="actions">
+        <button id="btn-copy" class="btn-primary">复制密码</button>
+        <button id="btn-refresh" class="btn-secondary">刷新密码</button>
+      </div>
+    </div>
+  </div>
+  
+  <script src="words.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

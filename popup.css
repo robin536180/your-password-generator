@@ -1,0 +1,267 @@
+body {
+  margin: 0;
+  padding: 16px;
+  background-color: #202a51; /* Dark blue background from screenshot */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  width: 460px;
+}
+
+.container {
+  background: white;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #111;
+  margin-bottom: 16px;
+}
+
+.type-selector {
+  display: flex;
+  background-color: #f2f4f8;
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 24px;
+}
+
+.type-btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 10px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: #555;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.type-btn:hover {
+  color: #111;
+}
+
+.type-btn.active {
+  background: white;
+  color: #111;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid #e0e4eb;
+  margin: 16px 0;
+}
+
+.section {
+  margin-bottom: 16px;
+}
+
+.length-control {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 20px 0;
+}
+
+.label-inline {
+  font-size: 14px;
+  color: #555;
+  line-height: 1.2;
+  min-width: 24px;
+}
+
+.slider {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  background: #e0e4eb;
+  border-radius: 2px;
+  outline: none;
+}
+
+.slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid #0061ff;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+/* Dynamic slider track fill color using CSS variable */
+.slider {
+  background: linear-gradient(to right, #0061ff var(--value, 50%), #e0e4eb var(--value, 50%));
+}
+
+.number-input {
+  width: 56px;
+  height: 36px;
+  border: 1px solid #d8dde6;
+  border-radius: 8px;
+  text-align: center;
+  font-size: 14px;
+  color: #111;
+  outline: none;
+}
+
+.number-input:focus {
+  border-color: #0061ff;
+}
+
+/* Hide spin buttons */
+.number-input::-webkit-outer-spin-button,
+.number-input::-webkit-inner-spin-button {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.options-container {
+  display: flex;
+  gap: 24px;
+  margin: 16px 0;
+}
+
+.options-container.hidden {
+  display: none;
+}
+
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.option-label {
+  font-size: 14px;
+  color: #555;
+}
+
+/* Toggle Switch */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 24px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider-round {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #6c757d;
+  transition: .2s;
+  border-radius: 24px;
+}
+
+.slider-round:before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: .2s;
+  border-radius: 50%;
+}
+
+input:checked + .slider-round {
+  background-color: #0061ff;
+}
+
+input:checked + .slider-round:before {
+  transform: translateX(16px);
+}
+
+/* Password Display Area */
+.password-display {
+  border: 1px solid #d8dde6;
+  border-radius: 8px;
+  padding: 24px;
+  text-align: center;
+  margin-bottom: 24px;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  word-break: break-all;
+}
+
+#password-output {
+  font-size: 20px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 1px;
+}
+
+/* Numbers color */
+.char-number {
+  color: #0061ff;
+}
+.char-symbol {
+  color: #e53935;
+}
+.char-letter {
+  color: #111;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+}
+
+.actions button {
+  flex: 1;
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 8px;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s;
+}
+
+.btn-primary {
+  background-color: #0061ff;
+  color: white;
+}
+
+.btn-primary:hover {
+  background-color: #0052cc;
+}
+
+.btn-primary.success {
+  background-color: #059669; /* Green on success */
+}
+
+.btn-secondary {
+  background-color: white;
+  color: #0061ff;
+  border: 1px solid #0061ff !important;
+}
+
+.btn-secondary:hover {
+  background-color: #f2f7ff;
+}
