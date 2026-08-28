@@ -2,87 +2,201 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>密码生成器</title>
+  <title>密码 & 用户名生成器</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <div class="container">
-    <div class="header">
-      <div class="label">选择密码类型</div>
-      <div class="type-selector">
-        <button class="type-btn active" data-type="random">🔀 随机</button>
-        <button class="type-btn" data-type="memorable">💡 容易记住</button>
-        <button class="type-btn" data-type="pin"># PIN</button>
+    <!-- 顶层Tab: 密码生成 / 用户名生成 -->
+    <div class="top-tab-bar">
+      <button class="top-tab-btn active" data-top-tab="password">🔑 密码生成</button>
+      <button class="top-tab-btn" data-top-tab="username">👤 用户名生成</button>
+    </div>
+
+    <!-- ================== 面板1: 密码生成（原有逻辑，保持不变） ================== -->
+    <div id="password-panel" class="panel">
+      <div class="header">
+        <div class="label">选择密码类型</div>
+        <div class="type-selector">
+          <button class="type-btn active" data-type="random" data-parent="password">🔀 随机</button>
+          <button class="type-btn" data-type="memorable" data-parent="password">💡 容易记住</button>
+          <button class="type-btn" data-type="pin" data-parent="password"># PIN</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="label">自定义新密码</div>
+        <hr class="divider">
+
+        <div class="length-control">
+          <div class="label-inline">字<br>符</div>
+          <input type="range" id="pwd-length-slider" class="slider" min="8" max="100" value="20">
+          <input type="number" id="pwd-length-input" class="number-input" min="8" max="100" value="20">
+        </div>
+
+        <hr class="divider">
+
+        <!-- Password Random Options -->
+        <div id="pwd-options-random" class="options-container">
+          <div class="option-row">
+            <span class="option-label">数字</span>
+            <label class="switch">
+              <input type="checkbox" id="pwd-opt-numbers" checked>
+              <span class="slider-round"></span>
+            </label>
+          </div>
+          <div class="option-row">
+            <span class="option-label">符号</span>
+            <label class="switch">
+              <input type="checkbox" id="pwd-opt-symbols">
+              <span class="slider-round"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Password Memorable Options -->
+        <div id="pwd-options-memorable" class="options-container hidden">
+          <div class="option-row">
+            <span class="option-label">首字母大写</span>
+            <label class="switch">
+              <input type="checkbox" id="pwd-opt-capitalize">
+              <span class="slider-round"></span>
+            </label>
+          </div>
+          <div class="option-row">
+            <span class="option-label">使用完整单词</span>
+            <label class="switch">
+              <input type="checkbox" id="pwd-opt-fullwords" checked>
+              <span class="slider-round"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Password PIN Options (Empty) -->
+        <div id="pwd-options-pin" class="options-container hidden"></div>
+
+        <hr class="divider">
+      </div>
+
+      <div class="section">
+        <div class="label">生成密码</div>
+        <div class="password-display">
+          <span id="password-output">7obvNFGc6veakKyGERfY</span>
+        </div>
+
+        <div class="actions">
+          <button id="pwd-btn-copy" class="btn-primary">复制密码</button>
+          <button id="pwd-btn-refresh" class="btn-secondary">刷新密码</button>
+        </div>
       </div>
     </div>
 
-    <div class="section">
-      <div class="label">自定义新密码</div>
-      <hr class="divider">
-      
-      <div class="length-control">
-        <div class="label-inline">字<br>符</div>
-        <input type="range" id="length-slider" class="slider" min="8" max="100" value="20">
-        <input type="number" id="length-input" class="number-input" min="8" max="100" value="20">
-      </div>
-
-      <hr class="divider">
-
-      <!-- Random Options -->
-      <div id="options-random" class="options-container">
-        <div class="option-row">
-          <span class="option-label">数字</span>
-          <label class="switch">
-            <input type="checkbox" id="opt-numbers" checked>
-            <span class="slider-round"></span>
-          </label>
-        </div>
-        <div class="option-row">
-          <span class="option-label">符号</span>
-          <label class="switch">
-            <input type="checkbox" id="opt-symbols">
-            <span class="slider-round"></span>
-          </label>
+    <!-- ================== 面板2: 用户名生成（新增） ================== -->
+    <div id="username-panel" class="panel hidden">
+      <div class="header">
+        <div class="label">选择用户名类型</div>
+        <div class="type-selector">
+          <button class="type-btn active" data-type="random" data-parent="username">🔀 随机</button>
+          <button class="type-btn" data-type="memorable" data-parent="username">💡 易记</button>
+          <button class="type-btn" data-type="custom" data-parent="username">✏️ 自定义</button>
         </div>
       </div>
 
-      <!-- Memorable Options -->
-      <div id="options-memorable" class="options-container hidden">
-        <div class="option-row">
-          <span class="option-label">首字母大写</span>
-          <label class="switch">
-            <input type="checkbox" id="opt-capitalize">
-            <span class="slider-round"></span>
-          </label>
+      <div class="section">
+        <div class="label">自定义新用户名</div>
+        <hr class="divider">
+
+        <!-- 自定义模式: 前后缀输入（仅 custom 显示） -->
+        <div id="usr-custom-fields" class="custom-fields hidden">
+          <div class="custom-input-group">
+            <span class="custom-input-label">前缀</span>
+            <input type="text" id="usr-custom-prefix" class="custom-input" placeholder="如: dev_">
+          </div>
+          <div class="custom-input-group">
+            <span class="custom-input-label">后缀</span>
+            <input type="text" id="usr-custom-suffix" class="custom-input" placeholder="如: _2026">
+          </div>
         </div>
-        <div class="option-row">
-          <span class="option-label">使用完整单词</span>
-          <label class="switch">
-            <input type="checkbox" id="opt-fullwords" checked>
-            <span class="slider-round"></span>
-          </label>
+
+        <div class="length-control">
+          <div class="label-inline">长<br>度</div>
+          <input type="range" id="usr-length-slider" class="slider" min="8" max="32" value="8">
+          <input type="number" id="usr-length-input" class="number-input" min="8" max="32" value="8">
         </div>
+
+        <hr class="divider">
+
+        <!-- Username Random Options -->
+        <div id="usr-options-random" class="options-container">
+          <div class="option-row">
+            <span class="option-label">数字</span>
+            <label class="switch">
+              <input type="checkbox" id="usr-opt-numbers" checked>
+              <span class="slider-round"></span>
+            </label>
+          </div>
+          <div class="option-row">
+            <span class="option-label">符号</span>
+            <label class="switch">
+              <input type="checkbox" id="usr-opt-symbols">
+              <span class="slider-round"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Username Memorable Options -->
+        <div id="usr-options-memorable" class="options-container hidden">
+          <div class="option-row">
+            <span class="option-label">首字母大写</span>
+            <label class="switch">
+              <input type="checkbox" id="usr-opt-capitalize">
+              <span class="slider-round"></span>
+            </label>
+          </div>
+          <div class="option-row">
+            <span class="option-label">使用完整单词</span>
+            <label class="switch">
+              <input type="checkbox" id="usr-opt-fullwords" checked>
+              <span class="slider-round"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Username Custom Options (中间随机段选项) -->
+        <div id="usr-options-custom" class="options-container hidden">
+          <div class="option-row">
+            <span class="option-label">中段数字</span>
+            <label class="switch">
+              <input type="checkbox" id="usr-opt-mid-numbers" checked>
+              <span class="slider-round"></span>
+            </label>
+          </div>
+          <div class="option-row">
+            <span class="option-label">中段符号</span>
+            <label class="switch">
+              <input type="checkbox" id="usr-opt-mid-symbols">
+              <span class="slider-round"></span>
+            </label>
+          </div>
+        </div>
+
+        <hr class="divider">
       </div>
 
-      <!-- PIN Options (Empty) -->
-      <div id="options-pin" class="options-container hidden"></div>
+      <div class="section">
+        <div class="label">生成的用户名</div>
+        <div class="password-display">
+          <span id="username-output">dJbsHRWp</span>
+        </div>
 
-      <hr class="divider">
-    </div>
-
-    <div class="section">
-      <div class="label">生成密码</div>
-      <div class="password-display">
-        <span id="password-output">7obvNFGc6veakKyGERfY</span>
-      </div>
-      
-      <div class="actions">
-        <button id="btn-copy" class="btn-primary">复制密码</button>
-        <button id="btn-refresh" class="btn-secondary">刷新密码</button>
+        <div class="actions">
+          <button id="usr-btn-copy" class="btn-primary">复制用户名</button>
+          <button id="usr-btn-refresh" class="btn-secondary">刷新用户名</button>
+        </div>
       </div>
     </div>
   </div>
-  
+
   <script src="words.js"></script>
   <script src="popup.js"></script>
 </body>

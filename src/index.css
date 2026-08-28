@@ -1,0 +1,64 @@
+/* src/index.css - Tailwind 基础层 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+/* 中文排版优化 */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv11", "ss01", "ss03";
+  color: #0f172a; /* slate-900，保证默认文字色非白 */
+  background: #f8fafc; /* slate-50 */
+}
+
+/* ---------- 全局表单控件默认样式：强制高对比度，杜绝「白字白底看不见」---------- */
+@layer base {
+  input[type='text'],
+  input[type='password'],
+  input[type='email'],
+  input[type='number'],
+  input[type='tel'],
+  input[type='url'],
+  input[type='date'],
+  input[type='search'],
+  textarea,
+  select {
+    @apply
+      text-slate-900
+      placeholder:text-slate-400
+      caret-brand-500;
+  }
+
+  input[type='text']:disabled,
+  input[type='password']:disabled,
+  input[type='email']:disabled,
+  input[type='number']:disabled,
+  input[type='tel']:disabled,
+  input[type='url']:disabled,
+  input[type='date']:disabled,
+  input[type='search']:disabled,
+  textarea:disabled,
+  select:disabled {
+    @apply text-slate-500 bg-slate-100 cursor-not-allowed;
+  }
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 97, 255, 0.25);
+  border-radius: 999px;
+}

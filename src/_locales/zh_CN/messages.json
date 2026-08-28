@@ -1,0 +1,18 @@
+{
+  "extName": {
+    "message": "1Pass Clone 密码管理器 (M1安全底座)",
+    "description": "扩展显示名"
+  },
+  "extShortName": {
+    "message": "1Pass Clone",
+    "description": "短名称（工具栏/上下文菜单）"
+  },
+  "extDescription": {
+    "message": "AES-256-GCM 本地加密的零知识密码管理器 - M1 安全底座版 (注册/解锁/加密存储)",
+    "description": "扩展详细描述"
+  },
+  "extActionTitle": {
+    "message": "1Pass Clone - 密码管理器",
+    "description": "popup 悬停标题"
+  }
+}

@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "密码生成器 (1Password Clone)",
-  "version": "1.0",
-  "description": "安全、强大的密码生成器",
+  "name": "密码 & 用户名生成器 (1Password Clone)",
+  "version": "1.1",
+  "description": "安全、强大的密码和随机用户名生成器，支持6种模式",
   "action": {
     "default_popup": "popup.html",
-    "default_title": "生成密码",
+    "default_title": "生成密码 / 用户名",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
