@@ -157,3 +157,98 @@ code = ((mac[offset] & 0x7F)<<24 | mac[offset+1]<<16 | mac[offset+2]<<8 | mac[of
   ```
 - 成功解锁 → 计数器立即清零 → 回退到正常态
 - 锁定状态下即使输入了正确密码也直接返回 `TEMP_LOCKED` 错误（防止后台跑字典）
+
+---
+
+## 2026-08-28 ~ 2026-09-03 M1 E2E 手测 5 个 Bug 根因深度发现（P0/P1）
+
+> **归档说明**：以下 5 条都是 Chrome MV3 + @crxjs/vite-plugin 2.0-beta.28 + Canvas 绝对布局 + 手机扫码 heuristic 的典型坑，**未来 M2~M8 所有阶段必须严格规避**。
+
+### 4.1 【Chrome MV3 硬规则坑】声明 default_locale 必须带 `_locales/<locale>/messages.json` 目录树
+- **发现时间**：2026-08-28
+- **触发场景**：manifest.json 第 7 行 `"default_locale":"zh_CN"`，但 `dist/_locales/` 目录不存在
+- **错误信息**：`Default locale was specified, but _locales subtree is missing. 无法加载清单。`
+- **影响面**：扩展 100% 无法被 Chrome 加载，连开发调试都进不去
+- **根因**：@crxjs/vite-plugin 的 MV3 编译器只搬运 manifest.json 直接引用的资源（图标、background.js、popup.html），`_locales/` 是 Chrome manifest 硬规则需要的目录，但**不是 manifest.json 里显式列出的资源** → 不会被自动打包
+- **永久规避方案（写进工程规范）**：
+  1. 每次新建 i18n locale 时，目录必须在 `src/_locales/<locale_code>/messages.json`（严格层级）
+  2. vite.config.ts 必须保留 `localesCopyPlugin` closeBundle 钩子递归 copy；若后续加了其他 manifest 硬规则目录（如 `_signature/`），同样走自定义 closeBundle 插件
+  3. 任何时候修改 manifest.json 的 default_locale 字段后，必须同时：(a) 新建对应 locale 的 messages.json；(b) 重新 build 后 `Get-ChildItem dist/_locales -Recurse` 验证目录树存在
+
+### 4.2 【CSS UA 样式坑】Windows 深色模式下 Tailwind `bg-white` 的输入框文字变白色（隐形）
+- **发现时间**：2026-08-28
+- **触发场景**：用户 Windows 系统是深色主题；所有未显式写 `text-xxx` 的 Tailwind 输入框
+- **用户反馈**：「输入框白色背景 + 输入的文字也是白色，根本看不见字儿」
+- **影响面**：Register/Unlock 所有表单，用户无法看到输入内容，注册/解锁流程全阻塞
+- **根因链**：
+  1. 旧 src/index.css `:root { color-scheme: light dark; }` 声明双配色 → 允许 Chrome 按系统主题切换 UA 样式
+  2. Windows 深色模式 → Chrome 的 UA 表单子样式对所有 `<input>` 自动套 `color: #ffffff`（白字）
+  3. RegisterScreen/UnlockScreen 的 className 只写了 `bg-white/80`、`border-slate-200` 等背景/边框，**没写死文字颜色 `text-slate-900`**（Tailwind 默认不继承 form 控件字色）
+  4. 结果：白背景 + 白字 = 隐形文字
+- **永久规避方案（写进工程规范）**：
+  1. `:root` 永远只写 `color-scheme: light;`，**绝对不允许 `light dark` 双配色**，禁止 Chrome 根据系统深色模式切换 UA 表单样式
+  2. `@layer base` 全局把 8 种 input + textarea + select 全拦截 → `@apply text-slate-900 placeholder:text-slate-400 caret-brand-500` 三件套强制兜底，任何 className 不写文字色也能正常显示
+  3. 所有 disabled 态的 form 控件同样在 `@layer base` 写 `bg-slate-100 text-slate-500` 兜底，防止 disabled 态也出白字
+  4. 未来 M2 新增任何表单控件（密码可见性切换、Search 输入、日期选择器）都复用这套，**绝对不要单个 className 里零散写 text-color**
+
+### 4.3 【手机扫码器 heuristic 坑】二维码 payload 里含 `@` + `.com` 后缀会被乱拼接跳钓鱼站
+- **发现时间**：2026-08-28（第一次修 URI 里含 @）→ 2026-09-03（第二次修邮箱放第 1 行被预览折叠）
+- **触发场景**：Emergency Kit 二维码内容包含邮箱 `robin536180@hotmail.com`
+- **用户反馈 1**：「手机扫码跳 https://40hotmail.com 打不开」（完全与我们代码无关的第三方扫描器解析 bug）
+- **用户反馈 2**：「扫码只出来一个邮箱地址，没看到 SK 文本」（扫描器预览命中邮箱字段后折叠其他内容）
+- **影响面**：EK 二维码主功能「手机端一键看到 SK」失效，用户体验大打折扣；甚至跳未知钓鱼 URL 造成用户恐慌
+- **根因**：手机相机/微信的二维码解析 heuristic 有三条规则（我们永远改不了外部扫描器的代码，只能调整输入去适配）：
+  1. 命中自定义 scheme URI 含 `@xxx.com` 格式 → heuristic 当成「mailto: 邮箱链接」→ 乱拼接前缀跳 40hotmail.com
+  2. 命中第一个 email 格式字段后，把这行当「摘要预览」显示，其他内容默认折叠（要用户手动点「展开全部」才看到 SK）
+  3. 中文冒号 `：` + 中文描述会干扰分词，导致 KEY:VALUE 键值识别失败
+- **永久规避方案（写进工程规范）**：
+  1. **任何二维码 payload 绝对不用自定义 URI scheme（xxx:// 协议）**，全用纯文本多行 KEY:VALUE 格式
+  2. **所有最重要的字段永远放第 1 行**：SK > 邮箱 > 其他次要元数据；重要字段确保在前 100 字符内完整显示
+  3. 前缀统一用 `全大写英文_KEY: `（冒号后一个空格），如 `SECRET_KEY:` / `EMAIL:` / `VERSION:`，绝不用中文冒号或中文描述当 key 前缀
+  4. 冗余文字（恢复步骤、警告、使用说明）都压到最后几行，避免挤占预览前 5 行的宝贵空间
+  5. QR 纠错等级默认不低于 Level Q(25%)（EK 要打印，对墨点/折痕/阴影抗损要求高），纯屏幕扫码可降到 M(15%)
+
+### 4.4 【Canvas 绝对布局坑】父容器 cardH 必须包住所有子元素（y+高），否则后续卡片顶边完美像素压盖溢出区
+- **发现时间**：2026-08-28（第一次 QR 底溢出主卡片）→ 2026-09-03（第二次警告卡整体溢出画布 + 建议行文字截半 + 水印压警告卡）
+- **用户反馈 1**：「二维码底部 + 右侧⑤⑥行文字被下方警告卡遮挡了」
+- **用户反馈 2**：「绿色建议行被底部框线截断，每个字只剩上半能看到」
+- **影响面**：EK 视觉不专业，关键信息（生成时间、SK 扫码结果、备份建议）丢失或不可读
+- **根因模式**：所有 Canvas 绝对布局的通用 bug，不止 EK，未来 M2 打印功能都会踩：
+  > **父 cardH 只按"预估内容"硬编码，没把"真实子元素的 y+高"加总验证 → 子元素溢出父卡片底边 → 下一张卡片的顶边正好按「父 cardY+cardH+margin」计算 → 完美像素级重叠在溢出区**
+- **数学验证套路（以后每次 Canvas 布局必须执行）**：
+  1. 先列每个块的 3 个坐标：`y_top`、`self_height`、`y_bottom = y_top + self_height`
+  2. 父容器的 `cardBottom = cardY + cardH` 必须 **> 所有子元素的 y_bottom + 10px 留白**，不满足立即加高 cardH
+  3. 画布 H 必须 **> 最后一张卡片的 yBottom + 水印/页脚高度 + 40px 底部留白**，不满足立即加高画布 H
+  4. 水印/页脚绝对不能写 `H - 40` 这种依赖画布 H 的写法 → 改成 `lastCardY + lastCardH + margin`，永远在最后一张卡片下方固定距离
+  5. 文字行的基线（fillText 第三个参数）= 文字视觉中心 + (fontSize/3)，建议行、警告行等大字 y 基线算完后，必须加 `fontSize + 10px` < 父 cardBottom 才不会出框
+- **EK 最终经过两轮调整的正确坐标（已验证）**：
+  ```
+  画布 H=1920
+  ├─ 主卡片 cardY=280, cardH=990 → 底=1270
+  │  ├─ QR y=870 h=340 → 底=1210 < 1270 ✅
+  │  └─ 右侧第⑥行文字 y=280+670+5×50=1200 → 底≈1228 < 1270 ✅
+  ├─ 警告卡 warnY=280+990+60=1330, warnH=520 → 底=1850 < 1920 ✅
+  │  ├─ 4行红警告 warnY+160 ~ warnY+160+3×60 = 1490~1670
+  │  └─ 绿建议行 adviceY=warnY+160+4×60+40=1770 → 底≈1770+32=1802 < 1850 ✅
+  └─ 水印 watermarkY=warnY+warnH+40=1890 → 底≈1910 < 1920 ✅（且 1890 > 1850 警告卡底，完全不重叠）
+  ```
+
+### 4.5 【MV3 Service Worker 最大坑】dynamic import() = 死；裸全局名 crypto/performance = 绑定丢；storage 写后抛错 = 半提交死锁
+- **发现时间**：2026-08-28
+- **触发场景**：RegisterScreen Step3 点绿色「我已保存完成注册」
+- **用户反馈 VERBATIM**：「报错 window is not defined，再点提示保管库已经存在」
+- **影响面**：① 用户无法完成注册（最严重 P0）；② 第一次抛错后 storage 已写入，后续永远被 vaultExists 守卫拦截，必须到 Options 危险区手动清空才能重新注册（死锁状态）
+- **三条独立根因链（同时爆发）**：
+
+  | 编号 | 根因 | 触发路径 | 表现 |
+  |---|---|---|---|
+  | ① | **MV3 SW 内 dynamic import() 是 Anti-Pattern**：Vite/Rollup 把 `await import('xxx')` 切成独立 chunk，该 chunk 会被注入 Vite HMR client、inherits 等 polyfill，这些 polyfill 里写了 `typeof window !== 'undefined'` / 直接访问 `window` → 在无 window 的 SW 里 100% 炸 | vault-store.ts 2 处：`await import('@/core/crypto').generateSecretKey()` / `import('@/lib/utils').then(({sha256Hex}) => sha256Hex(json))` | `ReferenceError: window is not defined` |
+  | ② | **Web Crypto 全局裸名绑定丢失**：TS strict + @crxjs beta28 编译 SW 时，crypto/performance/TextEncoder 等全局的词法上下文被 Rollup 错绑，直接裸写 `crypto.subtle.deriveKey` 会被解析成 undefined → undefined.subtle 抛错冒泡到 Chrome 后被统一包装成 "window is not defined" 兜底错误 | crypto.ts 10 处：`crypto.getRandomValues` × 1 / `crypto.subtle.*` × 6 / `performance.now()` × 1 / `new TextEncoder()` × 2 | 同上，统一报 window undefined |
+  | ③ | **存储半提交原子性（Partial Commit）**：chrome.storage.local.set() 本身 batch 原子，但「set() 之后的 return 语句抛错」→ 用户 UI 看到"失败"提示，但 storage 已经永久落盘；下次 background `case 'VAULT_INIT'` 首行 vaultExists 守卫直接拦截 | initializeEmptyVault 顺序：①deriveDK OK → ②AES OK → ③storage.set 已落盘 → ④return dynamic import 炸 → 半提交 | 第二次点绿色按钮永远被「保管库已经存在…」拦截死锁 |
+
+- **永久规避 5 条铁律（写进项目不变式，所有阶段严格执行）**：
+  1. 🔴 **MV3 Service Worker / background 目录下所有文件，绝对禁止任何 `await import('xxx')` / `import('xxx').then(...)` 动态导入** → 所有依赖一律顶部静态 import，任何动态 chunk = 必踩 window polyfill 坑
+  2. 🟠 **所有 Web Crypto API 全局（crypto / performance / TextEncoder / TextDecoder）一律在 crypto.ts 顶部用 `const _G = globalThis as {crypto, performance, TextEncoder, TextDecoder}` 缓存，之后只读 `_G.crypto.*`，绝不裸写 `crypto.xxx`** → 彻底防止词法绑定丢失
+  3. 🟡 **任何涉及 chrome.storage.local 写入的函数（initializeEmptyVault / persistVault / updateItemSettings 等）100% 套 `try{ 写storage; 后续逻辑; }catch(e){ try{ chrome.storage.local.remove(刚写的所有key) } catch{}; throw e }` 事务回滚** → 保证"全有或全无"，绝不半提交死锁
+  4. 🟢 **vaultExists 守卫拦截时，错误提示文本必须明确引导用户去"Options → 第4 Tab危险区 → 输入 YES-DELETE-ALL 清空"**，不要只说"去设置里清空"这种模糊文案，用户找不到
+  5. 🔵 **零知识原则辅助**：已半提交的 storage 代码绝对不能自动删除（即不能在 catch 块里无脑 remove 成功过的 vault）→ 必须给用户手动确认选项（YES-DELETE-ALL 输入框），防止代码 bug 导致用户保管库被意外永久删除

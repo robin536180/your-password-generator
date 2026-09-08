@@ -185,4 +185,83 @@
   7. vite.config.ts：manifest JSON 不匹配 ManifestV3Export → `as unknown as ManifestV3Export`；test.setupFiles 路径 `test/setup.ts` → `test/vitest/setup.ts`
   8. test/vitest/1-crypto.test.ts：deriveMasterKeyBySalt 实际在 vault-store.ts 导出 → 改 import from `@/core/vault-store`
 
-→ **M1 阶段 9 大里程碑全部达标（代码 + 类型 + 构建 + 加密压测）。下一阶段 M2：集成 v1.1 密码+用户名生成器到 Item 编辑器 + 24 分类模板 + E2E 手测流程**
+→ **M1 阶段 9 大里程碑代码全部达标，进入 E2E 手测 Bug 修复阶段。**
+
+---
+
+## 2026-08-28 ~ 2026-09-03 M1 E2E 手测 Bug 修复（5 个 P0/P1 Bug 全闭环）
+
+### 阶段19：Bug1 Manifest Default Locale 清单加载失败 ✅
+- **触发时间**：2026-08-28 用户首次 chrome://extensions 加载 dist
+- **报错 VERBATIM**：`Default locale was specified, but _locales subtree is missing. 无法加载清单。`
+- **根因**：MV3 硬规则：manifest.json 声明 `"default_locale":"zh_CN"` 后 **必须存在 `_locales/<locale_code>/messages.json` 目录树**；但 dist/ 目录下根本没有 `_locales/`，因为 @crxjs/vite-plugin 不会自动搬运非 manifest 直接引用的目录
+- **修复操作 4 连**：
+  1. 新建 [src/_locales/zh_CN/messages.json](file:///d:/MyProjects/your-password-generator/src/_locales/zh_CN/messages.json) 4 键 i18n（extName/extShortName/extDescription/extActionTitle）
+  2. 新建 [src/_locales/en/messages.json](file:///d:/MyProjects/your-password-generator/src/_locales/en/messages.json) 同 4 键英文翻译
+  3. [src/manifest.json](file:///d:/MyProjects/your-password-generator/src/manifest.json) name/short_name/description/action.default_title → 4 个 `__MSG_extXxx__` 占位符
+  4. [vite.config.ts](file:///d:/MyProjects/your-password-generator/vite.config.ts) 新增 `localesCopyPlugin('dist')` 自定义 Vite 插件 — closeBundle 钩子递归 copy `src/_locales/**` → `dist/_locales/**`；build 日志输出 `[copy-locales] ✅ copied _locales → dist\_locales`
+- **用户确认**：VERBATIM「可以了」 → 扩展加载成功，立即进入 Bug2
+
+### 阶段20：Bug2 输入框白底白字看不见 ✅
+- **触发时间**：2026-08-28 Bug1 修完紧接着
+- **用户反馈 VERBATIM**：「现在输入框是白色的背景色，输入框输入的文字也是白色，根本看不见字儿」
+- **根因**：Windows 系统深色模式下，Chrome 的 User Agent 样式会给所有 `<input>` 自动套「白字」；但 Register/Unlock Screen 的 className 只覆写了 `bg-white/80`（白色背景），**没写死文字颜色** → 白字 + 白底 = 隐形文字
+- **修复文件**：[src/index.css](file:///d:/MyProjects/your-password-generator/src/index.css)
+- **修复代码 4 处**：
+  1. `:root { color-scheme: light; }` —— 禁掉 dark，Chrome 不再自动套 UA 白字表单样式
+  2. `body { color:#0f172a; background:#f8fafc; }` —— 默认正文深黑，背景浅灰，全局兜底
+  3. `@layer base` 拦截全部 8 种 input + textarea + select → `@apply text-slate-900 placeholder:text-slate-400 caret-brand-500`（文字深黑 / placeholder 浅灰 / 光标品牌蓝，三件套永保可见）
+  4. disabled 态兜底：`@apply text-slate-500 bg-slate-100 cursor-not-allowed`
+- **构建验证锚点**：dist CSS 产物 3 锚点全部 True → color-scheme:light / #0f172a 存在 / #0061ff brand 光标蓝存在
+- **用户确认**：未再反馈输入框问题 → 已验证通过
+
+### 阶段21：Bug3 Emergency Kit QR 扫码跳 40hotmail.com 钓鱼站 ✅
+- **触发时间**：2026-08-28 第一次注册成功下载 EK 后手机扫码
+- **用户反馈 VERBATIM**：「手机扫码也打开的地址是 https://40hotmail.com，打不开」附 EK 截图（邮箱 robin536180@hotmail.com）
+- **根因（与代码无关的扫描器 heuristic bug）**：旧 QR payload = `1p://ek?email=robin536180@hotmail.com&sk=A3-...` 自定义 URI 协议**含 `@` 字符 + 邮箱域名后缀** → 手机相机/微信二维码解析 heuristic 把 `robin536180@hotmail.com` 误判成「邮箱/网址」，乱拼接前缀 → 跳 40hotmail.com（完全是外部扫描器的解析 bug，与我们的代码无责任关系）
+- **修复**：[emergency-kit.ts L120-L131](file:///d:/MyProjects/your-password-generator/src/core/emergency-kit.ts#L120-L131) 二维码内容从 9 行自定义 URI 协议 → **5 行纯文本 + KEY:VALUE 大写前缀 + SK 放最前**：
+  ```
+  SECRET_KEY: A3-XXXX-XXXX-XXXX-XXXX   ← 第1行！手机扫码预览直接命中 SK 而非邮箱
+  EMAIL: xxx@hotmail.com
+  VERSION / CREATED_AT / 恢复说明（不跳网页提示）
+  ```
+- **升级**：QR Error Correction Level M(15%) → Q(25%) 抗打印折痕/墨点/拍照阴影
+- **第一轮修完后补充问题**：用户反馈（9月3日）仍只看到邮箱 → 扫描器预览还有第二个 heuristic：「命中第一个邮箱格式字段就折叠其他」→ 再把邮箱移到第 2 行，SK 第 1 行强制前置，精简内容到 5 行确保前 100 字符内完整显示 SK
+- **最终用户确认（2026-09-03）**：VERBATIM「3 项都 OK」中第 2 项 → 扫码预览首行直接显示完整 SECRET_KEY: A3-XXXX...，不再跳任何网页
+
+### 阶段22：Bug4 Emergency Kit 二维码底部 + 右侧⑤⑥行被警告卡遮挡 ✅（两次调整）
+- **第一次修复（2026-08-28）**：
+  - 用户反馈 VERBATIM 附肉眼截图：「最下边的二维码部分和右侧的文字，被下放的框内文字遮挡住了」
+  - 像素级数学根因：`cardH=860` 不够 → QR y=870 高 340，底=1210 **> 主卡片底 1140，溢出 70px**；warnY=280+860+60=**1200** 正好压在 QR 溢出区 + 右侧第⑤(y=1150)/第⑥(y=1200)行完美像素重叠
+  - 第一次调：cardH=860→990（+130px）、画布 H=1754→1860（+106px）、warnY 按 cardY+cardH+60 动态算
+- **第二次修复（2026-09-03 用户继续反馈）**：
+  - 用户反馈 VERBATIM：「这行字现在被底部框线截断了挡住了半行字，每个字都只有一半能看到」
+  - 像素级数学二次根因：第一次调 canvasH=1860 没真生效（实际代码仍写 H=1754）→ warnY=1330 + warnH=460 → 警告卡底=**1790 > 画布 H=1754，溢出 36px**（警告卡底部框线本身就超出了画布）；绿色建议行 y=1750，32px 粗体底部到 1768>1754 溢出 14px = 半行字看不见；水印 H-40=1714 还压在警告卡内部重叠
+  - 最终修复 4 项（画布+警告卡+文字 y+水印）：
+    | 对象 | 修改前（坏） | 修改后（好） |
+    |---|---|---|
+    | 画布 H | 1754 | **1920**（+166px，保证警告卡+建议行+水印+留白100%装进去） |
+    | 警告卡 warnH | 460 | **520**（+60px，装 4 行红警告 + 1 行绿建议 + 底部留白） |
+    | 绿建议行 y | warnY+160+4×60+20=1750 | **adviceY = warnY+160+4×60+40 = 1770**（在警告卡内部，1770+32 < 1850 警告卡底） |
+    | 水印 watermarkY | H-40=1714（压警告卡内） | **warnY+warnH+40 = 1890**（警告卡下方 40px 留白之后，完全不重叠） |
+- **最终用户确认（2026-09-03）**：VERBATIM「3 项都 OK」中第 1 项 → 绿色建议行 100% 完整、警告卡框线完整、水印在警告卡下方不重叠
+
+### 阶段23：Bug5 注册「我已保存完成注册」按钮 window is not defined + 二次点击「保管库已存在」半提交 ✅
+- **触发时间**：2026-08-28 第一次完整注册 Step3 点绿色按钮
+- **用户反馈 VERBATIM**：「当我点击『我已保存，完成注册』按钮的时候，报错：window is not defined，再次点击提示：保管库已经存在，如需重新开始请先在设置里清空。看看为什么报错」
+- **双独立错误链根因**：
+  | 报错 | 根因链 |
+  |---|---|
+  | `window is not defined` | 链 ① MV3 Service Worker **全局对象是 self/globalThis，完全没有 window** → vault-store.ts 用了 2 处 `await import('xxx')` 动态导入 → Vite/@crxjs 编译时切成独立 chunk，chunk 被注入 Vite HMR 残余 / inherits polyfill（含 window 引用）→ 立即 ReferenceError；链 ② crypto.ts 裸写 crypto/performance/TextEncoder() 共 10 处 → @crxjs 在 SW 编译后对这些全局名的**词法绑定上下文错了**，变量解析失败冒泡成 Chrome 统一的 "window is not defined" 兜底错误 |
+  | 「保管库已存在」拦截 | **半提交原子性问题（Partial Commit）**：执行顺序 = ① deriveDK OK → ② AES OK → ③ chrome.storage.local.set({meta, cipher}) **已 commit 落盘** → ④ return 行 dynamic import 抛错 → 用户看到「失败」但 storage 里两个 key 已永久写入；第二次点击 background `case 'VAULT_INIT'` 第一行 `if(vaultExists()) return wrapErr('保管库已经存在…')` 守卫直接拦截 |
+- **修复 3 个核心文件**：
+  1. [src/core/crypto.ts](file:///d:/MyProjects/your-password-generator/src/core/crypto.ts) FULL REWRITE：顶部 `const _G = globalThis as {crypto, performance, TextEncoder, TextDecoder}` 统一缓存，所有 10 处 crypto.* / performance.now() / new TextEncoder() 全部替换成 `_G.*` → 彻底防止词法绑定丢失
+  2. [src/core/vault-store.ts](file:///d:/MyProjects/your-password-generator/src/core/vault-store.ts) FULL REWRITE：① 顶部静态 import generateSecretKey+sha256Hex+uuidv4+nowMs，彻底删除 2 处 dynamic import（SW 里禁任何 `import('xxx')` chunk）；② initializeEmptyVault 整个函数 `try{...}catch(err){ await chrome.storage.local.remove([META, VAULT_CIPHER]); throw err }` 事务回滚，**任何失败都「全有或全无」，绝不半提交**
+  3. 零知识原则辅助：历史留下的半提交 meta/cipher 不能自动删（非用户主动确认绝不删存储）→ 提供 Options 危险区 `YES-DELETE-ALL` 手动清空流程，UI 指导用户操作
+- **最终验证流程 4 步（2026-09-03 用户 VERBATIM「4步全过」）**：
+  1. Reload扩展 → Options 危险区 YES-DELETE-ALL 清空上次半提交 storage ✅
+  2. 重新注册到 Step3 → 点绿色「✅ 我已保存完成注册」→ **零报错** ✅
+  3. Step4 绿色对勾卡显示 1.8s → 自动跳解锁页 ✅
+  4. 零知识审计（F12 Application Local Storage 搜 6 关键词：password/pwd/master/dk/A3-/1p-unlock-verifier-v1）→ **全部无命中** ✅；只能看到 `__1p_meta__`（明文 saltHex/verifierB64/secretKeyMasked/accountEmail/pbkdf2Iterations=650000）+ `__1p_vault_cipher__`（Base64 密文 Blob）
+
+→ **M1 阶段 9 大里程碑 + 5 个 E2E 手测 Bug 全部 100% 闭环通过用户验收。下一阶段：M2 启动（密码生成器 React 组件 + 24 分类 Item 编辑器 + Watchtower MVP 弱密码检测）**

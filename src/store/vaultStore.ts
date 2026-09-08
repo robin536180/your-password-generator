@@ -20,15 +20,20 @@ import type {
   VaultResp,
   VaultStatus,
   VaultAction,
+  ImportVaultPayload,
+  ImportVaultResult,
+  ExportVaultResult,
 } from '@/types/ipc';
 import type { AppSettings, Item, VaultMetaPlain, VaultPlaintext } from '@/types/models';
+import type { ImportConflictStrategy } from '@/core/vault-store';
 import { Log } from '@/core/logger';
 
 const REQ_ID_PREFIX = 'ui';
 let __reqSeq = 0;
 const nextReqId = () => `${REQ_ID_PREFIX}-${Date.now()}-${(++__reqSeq).toString(36)}`;
+const __sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** sendMessage 包装：自动带 requestId + 超时保护 */
+/** sendMessage 包装：自动带 requestId + 超时保护 + MV3 SW 冷启动自动重试 */
 export const ipcCall = async <T>(
   action: VaultAction | (string & {}),
   payload?: unknown,
@@ -38,29 +43,55 @@ export const ipcCall = async <T>(
   const msg = { action, payload, requestId };
   Log.debug('IPC:CALL', `→ ${action}  reqId=${requestId}`, payload);
 
-  const timer = setTimeout(() => {
-    Log.error('IPC:TIMEOUT', `⏱ ${action} 超时 (${timeoutMs}ms) reqId=${requestId}`);
-  }, timeoutMs);
+  const overallStartTs = Date.now();
+  const RETRY_BACKOFF = [0, 100, 200];
+  let lastRawMsg: string | null = null;
+  let lastReceivingEnd = false;
+  let attemptIdx = 0;
 
-  try {
-    const resp = (await chrome.runtime.sendMessage(msg)) as VaultResp<T> | undefined;
-    clearTimeout(timer);
-    if (!resp) {
-      return { ok: false, error: 'Background 无响应（可能 Service Worker 被终止，请重新打开 popup）', requestId };
+  for (; attemptIdx < RETRY_BACKOFF.length; attemptIdx += 1) {
+    if (RETRY_BACKOFF[attemptIdx] > 0) {
+      await __sleep(RETRY_BACKOFF[attemptIdx]);
+      Log.debug('IPC:RETRY', `⟳ ${action} 第${attemptIdx + 1}次尝试，已等待${RETRY_BACKOFF[attemptIdx]}ms reqId=${requestId}`);
     }
-    resp.requestId = requestId;
-    if (resp.ok) {
-      Log.debug('IPC:RESP', `← ${action} ✅  reqId=${requestId}`);
-    } else {
-      Log.warn('IPC:RESP', `← ${action} ❌  reqId=${requestId} err=${resp.error} code=${resp.code ?? '-'}`);
+    const timer = setTimeout(() => {
+      Log.error('IPC:TIMEOUT', `⏱ ${action} 超时 (${timeoutMs}ms) reqId=${requestId}`);
+    }, timeoutMs);
+    try {
+      const resp = (await chrome.runtime.sendMessage(msg)) as VaultResp<T> | undefined;
+      clearTimeout(timer);
+      if (!resp) {
+        lastRawMsg = 'Background 无响应（sendMessage 返回 undefined）';
+        continue;
+      }
+      resp.requestId = requestId;
+      if (attemptIdx > 0) {
+        Log.info('IPC:RECOVERY', `✅ ${action} 重试${attemptIdx}次后成功 reqId=${requestId} totalWait=${Date.now() - overallStartTs}ms`);
+      }
+      if (resp.ok) {
+        Log.debug('IPC:RESP', `← ${action} ✅  reqId=${requestId}`);
+      } else {
+        Log.warn('IPC:RESP', `← ${action} ❌  reqId=${requestId} err=${resp.error} code=${resp.code ?? '-'}`);
+      }
+      return resp;
+    } catch (e) {
+      clearTimeout(timer);
+      const rawMsg = e instanceof Error ? (e.message ?? String(e)) : String(e);
+      const isReceivingEnd = /Receiving end does not exist/i.test(rawMsg);
+      lastRawMsg = rawMsg;
+      lastReceivingEnd = isReceivingEnd;
+      Log.error('IPC:ERROR', `${action} catch(attempt=${attemptIdx + 1}): ${rawMsg}`);
+      if (!isReceivingEnd) {
+        return { ok: false, error: rawMsg, requestId };
+      }
     }
-    return resp;
-  } catch (e) {
-    clearTimeout(timer);
-    const msg = e instanceof Error ? e.message : String(e);
-    Log.error('IPC:ERROR', `${action} catch: ${msg}`);
-    return { ok: false, error: msg, requestId };
   }
+
+  Log.error('IPC:EXHAUSTED', `💥 ${action} 重试${RETRY_BACKOFF.length}次全部失败 reqId=${requestId} totalWait=${Date.now() - overallStartTs}ms lastErr=${lastRawMsg ?? '-'}`);
+  const finalMsg = lastReceivingEnd
+    ? 'Background Service Worker 启动超时（MV3 冷启动竞态），请关闭扩展后重新打开（或刷新页面）重试。'
+    : (lastRawMsg ?? 'Unknown IPC error');
+  return { ok: false, error: finalMsg, requestId };
 };
 
 /* ============ Zustand store ============ */
@@ -85,10 +116,18 @@ export interface VaultStoreState {
 
   /* ---------- 方法：Item ---------- */
   fetchItems: (p?: ItemListPayload) => Promise<Item[]>;
+  getItemById: (id: string) => Promise<Item | null>;
   createItem: (item: Partial<Item> & Pick<Item, 'category' | 'title' | 'fields'> & { vaultId?: string }) => Promise<Item | null>;
   updateItem: (patch: Partial<Item> & Pick<Item, 'id'>) => Promise<Item | null>;
-  trashItem: (id: string) => Promise<boolean>;
-  toggleFavorite: (id: string) => Promise<boolean>;
+  trashItem: (id: string) => Promise<{ ok: boolean; code?: string; error?: string }>;
+  restoreItem: (id: string) => Promise<{ ok: boolean; code?: string; error?: string }>;
+  deleteItemPermanently: (id: string) => Promise<{ ok: boolean; code?: string; error?: string }>;
+  duplicateItem: (id: string) => Promise<Item | null>;
+  toggleFavorite: (id: string) => Promise<{ ok: boolean; code?: string; error?: string }>;
+
+  /* ---------- 方法：导入导出（加密备份） ---------- */
+  exportVault: () => Promise<{ ok: boolean; data?: ExportVaultResult; error?: string; code?: string }>;
+  importVault: (blobB64: string, masterPassword: string, strategy: ImportConflictStrategy) => Promise<{ ok: boolean; data?: ImportVaultResult; error?: string; code?: string }>;
 
   /* ---------- 方法：Settings ---------- */
   updateSettings: (patch: Partial<AppSettings>) => Promise<boolean>;
@@ -110,7 +149,13 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     const r = await ipcCall<StatusResult>('VAULT_STATUS');
     if (!r.ok) return;
     const { status, meta, failedAttempts, lockedUntilMs, itemCount, autoLockMinutes } = r.data;
-    Log.info('STORE:STATUS', `refresh → ${status}, failed=${failedAttempts}, items=${itemCount ?? 'N/A'}`);
+    // ⭐ Fix: 如果 BG 已解锁并返回了明文快照 → 立即写入当前 zustand（支持 Options 独立新 tab 同步）
+    const vaultPlain: VaultPlaintext | null | undefined = (r.data as any).vaultSnapshot;
+    const nextSnapshot = vaultPlain ?? (status === 'UNLOCKED' ? get().vaultSnapshot : null);
+    Log.info(
+      'STORE:STATUS',
+      `refresh → ${status}, failed=${failedAttempts}, items=${vaultPlain ? `${vaultPlain.items.length}(from BG)` : (itemCount ?? 'N/A')}`,
+    );
     set({
       status,
       meta,
@@ -118,8 +163,7 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
       lockedUntilMs,
       remainingAttempts: Math.max(0, 5 - failedAttempts),
       autoLockMinutes: autoLockMinutes ?? 10,
-      // LOCKED 时 snapshot 清空（避免内存残留明文）
-      vaultSnapshot: status === 'UNLOCKED' ? get().vaultSnapshot : null,
+      vaultSnapshot: nextSnapshot,
     });
   },
 
@@ -165,18 +209,27 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     return r.ok ? r.data.items : [];
   },
 
+  getItemById: async (id) => {
+    const r = await ipcCall<Item>('ITEM_GET', { id });
+    return r.ok ? r.data : null;
+  },
+
   createItem: async (partial) => {
     const r = await ipcCall<Item>('ITEM_CREATE', partial as unknown as Record<string, unknown>);
     if (!r.ok) return null;
-    // 乐观更新 snapshot
     const snap = get().vaultSnapshot;
-    if (snap) set({ vaultSnapshot: { ...snap, items: [...snap.items, r.data] } });
+    if (snap) {
+      set({ vaultSnapshot: { ...snap, items: [r.data, ...snap.items] } });
+    }
     return r.data;
   },
 
   updateItem: async (patch) => {
     const r = await ipcCall<Item>('ITEM_UPDATE', patch as unknown as Record<string, unknown>);
-    if (!r.ok) return null;
+    if (!r.ok) {
+      Log.warn('STORE:UPDATE', `乐观锁或更新失败 code=${r.code} id=${patch.id}`);
+      return null;
+    }
     const snap = get().vaultSnapshot;
     if (snap) {
       set({
@@ -190,33 +243,98 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   },
 
   trashItem: async (id) => {
-    const r = await ipcCall<void>('ITEM_TRASH', { id });
-    if (!r.ok) return false;
+    const r = await ipcCall<Item>('ITEM_TRASH', { id });
+    if (!r.ok) return { ok: false, code: r.code, error: r.error };
+    const snap = get().vaultSnapshot;
+    if (snap) {
+      set({
+        vaultSnapshot: {
+          ...snap,
+          items: snap.items.map((i) => (i.id === id ? { ...i, trashed: true, trashedAt: Date.now() } : i)),
+        },
+      });
+    }
+    return { ok: true };
+  },
+
+  restoreItem: async (id) => {
+    const r = await ipcCall<Item>('ITEM_RESTORE', { id });
+    if (!r.ok) return { ok: false, code: r.code, error: r.error };
+    const snap = get().vaultSnapshot;
+    if (snap) {
+      set({
+        vaultSnapshot: {
+          ...snap,
+          items: snap.items.map((i) => {
+            if (i.id !== id) return i;
+            const c = { ...i };
+            delete (c as any).trashedAt;
+            return { ...c, trashed: false };
+          }),
+        },
+      });
+    }
+    return { ok: true };
+  },
+
+  deleteItemPermanently: async (id) => {
+    const r = await ipcCall<boolean>('ITEM_DELETE', { id });
+    if (!r.ok) return { ok: false, code: r.code, error: r.error };
     const snap = get().vaultSnapshot;
     if (snap) {
       set({
         vaultSnapshot: {
           ...snap,
           items: snap.items.filter((i) => i.id !== id),
+          deleted: snap.deleted.filter((d) => d.id !== id),
         },
       });
     }
-    return true;
+    return { ok: true };
+  },
+
+  duplicateItem: async (id) => {
+    const r = await ipcCall<Item>('ITEM_DUPLICATE', { id });
+    if (!r.ok) return null;
+    const snap = get().vaultSnapshot;
+    if (snap) {
+      set({ vaultSnapshot: { ...snap, items: [r.data, ...snap.items] } });
+    }
+    return r.data;
   },
 
   toggleFavorite: async (id) => {
-    const r = await ipcCall<Item>('ITEM_TOGGLE_FAVORITE', { id });
-    if (!r.ok) return false;
+    const r = await ipcCall<Item | { id: string; favorite: boolean }>('ITEM_TOGGLE_FAVORITE', { id });
+    if (!r.ok) return { ok: false, code: r.code, error: r.error };
     const snap = get().vaultSnapshot;
     if (snap) {
+      const newFav = 'favorite' in r.data ? (r.data as any).favorite : (r.data as Item).favorite;
       set({
         vaultSnapshot: {
           ...snap,
-          items: snap.items.map((i) => (i.id === id ? (r.data as Item) : i)),
+          items: snap.items.map((i) => (i.id === id ? { ...i, favorite: Boolean(newFav) } : i)),
         },
       });
     }
-    return true;
+    return { ok: true };
+  },
+
+  exportVault: async () => {
+    const r = await ipcCall<ExportVaultResult>('MISC_EXPORT_VAULT', {});
+    if (!r.ok) return { ok: false, error: r.error, code: r.code };
+    return { ok: true, data: r.data };
+  },
+
+  importVault: async (blobB64, masterPassword, strategy) => {
+    const payload: ImportVaultPayload = { blobB64, masterPassword, conflictStrategy: strategy };
+    const r = await ipcCall<ImportVaultResult>(
+      'MISC_IMPORT_VAULT',
+      payload as unknown as Record<string, unknown>,
+    );
+    if (!r.ok) return { ok: false, error: r.error, code: r.code };
+    set({ vaultSnapshot: r.data.vaultSnapshotAfter });
+    Log.info('STORE:IMPORT', `✅ 导入快照已同步 added=${r.data.added} skipped=${r.data.skipped}`);
+    return { ok: true, data: r.data };
   },
 
   updateSettings: async (patch) => {

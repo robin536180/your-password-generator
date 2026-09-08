@@ -25,6 +25,9 @@ import type {
   VaultResp,
   VaultStatus,
   WatchtowerScanResult,
+  ImportVaultPayload,
+  ImportVaultResult,
+  ExportVaultResult,
 } from '@/types/ipc';
 import type {
   AppSettings,
@@ -32,6 +35,7 @@ import type {
   VaultMetaPlain,
   VaultPlaintext,
 } from '@/types/models';
+import { STORAGE_KEYS } from '@/types/models';
 import {
   addItem,
   initializeEmptyVault,
@@ -43,7 +47,17 @@ import {
   updateItem,
   updateSettings,
   vaultExists,
+  getItemById,
+  deleteItemPermanently,
+  duplicateItem as vaultDupItem,
+  toggleFavoriteItem as vaultToggleFav,
+  encryptExportBlob,
+  decryptImportBlob,
+  mergeImportedVault,
+  ERR_CODES as VS_ERR,
+  StoreError,
 } from '@/core/vault-store';
+import type { ImportConflictStrategy } from '@/core/vault-store';
 import { Log } from '@/core/logger';
 import { nowMs, uuidv4 } from '@/lib/utils';
 import type { UnlockError } from '@/core/vault-store';
@@ -80,11 +94,17 @@ const requireUnlock = () => {
 const requireUnlockResp = <T>(fn: () => T | Promise<T>): Promise<VaultResp<T>> | VaultResp<T> => {
   try {
     const { dk, vault, meta } = requireUnlock();
-    void dk; void vault; void meta; // TS 提示用
+    void dk; void vault; void meta;
     const out = fn();
-    return out instanceof Promise ? out.then((data) => ({ ok: true, data } as VaultResp<T>)) : { ok: true, data: out } as VaultResp<T>;
+    return out instanceof Promise
+      ? out.then((data) => ({ ok: true, data } as VaultResp<T>)).catch((e: any) => {
+        const code = e instanceof StoreError ? e.code : undefined;
+        return { ok: false, error: e.message ?? String(e), code } as VaultResp<T>;
+      })
+      : { ok: true, data: out } as VaultResp<T>;
   } catch (e: any) {
-    return { ok: false, error: e.message ?? String(e) } as VaultResp<T>;
+    const code = e instanceof StoreError ? e.code : undefined;
+    return { ok: false, error: e.message ?? String(e), code } as VaultResp<T>;
   }
 };
 
@@ -157,6 +177,8 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
           lockedUntilMs: __lockedUntilMs && __lockedUntilMs > nowMs() ? __lockedUntilMs : null,
           itemCount: __vaultPlain__ ? __vaultPlain__.items.length : null,
           autoLockMinutes: __vaultPlain__?.settings.autoLockMinutes ?? null,
+          // ⭐ Fix: 当 BG 已解锁时把明文快照一并返回，Popup/Options 独立 tab 的 zustand 实例可直接同步
+          vaultSnapshot: __dk__ && __vaultPlain__ ? __vaultPlain__ : undefined,
         });
       }
 
@@ -234,7 +256,7 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
           if (pl.vaultId) list = list.filter((i) => i.vaultId === pl.vaultId);
           if (pl.category) list = list.filter((i) => i.category === pl.category);
           if (pl.trashed) {
-            list = (__vaultPlain__!).deleted.map((d: any) => ({ ...d, category: d.category, fields: d.fields })) as Item[];
+            list = list.filter((i) => i.trashed);
           } else {
             list = list.filter((i) => !i.trashed);
           }
@@ -257,9 +279,12 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
       case 'ITEM_GET': {
         return requireUnlockResp(() => {
           const id = (msg.payload as any).id as string;
-          const it = (__vaultPlain__!).items.find((i) => i.id === id)
-            ?? (__vaultPlain__!).deleted.find((d) => d.id === id) as any as Item;
-          if (!it) throw new Error(`Item ${id} 不存在`);
+          const it = getItemById(__vaultPlain__!, id);
+          if (!it) {
+            const fromDeleted = (__vaultPlain__!).deleted.find((d) => d.id === id) as any as Item;
+            if (!fromDeleted) throw new StoreError(VS_ERR.ITEM_NOT_FOUND, `Item ${id} 不存在`);
+            return fromDeleted as Item;
+          }
           return it as Item;
         });
       }
@@ -285,30 +310,25 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
       case 'ITEM_TRASH': {
         return requireUnlockResp(async () => {
           const id = (msg.payload as any).id as string;
-          trashItem(__vaultPlain__!, id);
+          const it = trashItem(__vaultPlain__!, id);
           __metaPlain__ = await persistVault(__dk__!, __vaultPlain__!, __metaPlain__!);
-          return true;
+          return it;
         });
       }
 
       case 'ITEM_RESTORE': {
         return requireUnlockResp(async () => {
           const id = (msg.payload as any).id as string;
-          restoreItem(__vaultPlain__!, id);
+          const it = restoreItem(__vaultPlain__!, id);
           __metaPlain__ = await persistVault(__dk__!, __vaultPlain__!, __metaPlain__!);
-          return true;
+          return it;
         });
       }
 
       case 'ITEM_DELETE': {
         return requireUnlockResp(async () => {
           const id = (msg.payload as any).id as string;
-          const before = (__vaultPlain__!).deleted.length;
-          (__vaultPlain__!).deleted = (__vaultPlain__!).deleted.filter((d) => d.id !== id);
-          (__vaultPlain__!).items = (__vaultPlain__!).items.filter((i) => i.id !== id);
-          if ((__vaultPlain__!).deleted.length === before && (__vaultPlain__!).items.length === before) {
-            throw new Error(`Item ${id} 不存在`);
-          }
+          deleteItemPermanently(__vaultPlain__!, id);
           __metaPlain__ = await persistVault(__dk__!, __vaultPlain__!, __metaPlain__!);
           return true;
         });
@@ -317,18 +337,7 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
       case 'ITEM_DUPLICATE': {
         return requireUnlockResp(async () => {
           const id = (msg.payload as any).id as string;
-          const src = (__vaultPlain__!).items.find((i) => i.id === id);
-          if (!src) throw new Error(`Item ${id} 不存在`);
-          const dup: Item = {
-            ...src,
-            id: uuidv4(),
-            title: `${src.title} (副本)`,
-            version: 1,
-            createdAt: nowMs(),
-            updatedAt: nowMs(),
-            fields: src.fields.map((f) => ({ ...f, id: uuidv4() })),
-          } as Item;
-          (__vaultPlain__!).items.push(dup);
+          const dup = vaultDupItem(__vaultPlain__!, id);
           __metaPlain__ = await persistVault(__dk__!, __vaultPlain__!, __metaPlain__!);
           return dup;
         });
@@ -337,9 +346,10 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
       case 'ITEM_TOGGLE_FAVORITE': {
         return requireUnlockResp(async () => {
           const id = (msg.payload as any).id as string;
-          const upd = updateItem(__vaultPlain__!, id, { favorite: !(__vaultPlain__!.items.find((i) => i.id === id)?.favorite ?? false) } as any);
+          const r = vaultToggleFav(__vaultPlain__!, id);
           __metaPlain__ = await persistVault(__dk__!, __vaultPlain__!, __metaPlain__!);
-          return upd;
+          const updated = getItemById(__vaultPlain__!, id);
+          return updated ?? r;
         });
       }
 
@@ -435,6 +445,47 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
               totalItems: items.length,
             },
           } as WatchtowerScanResult;
+        });
+      }
+
+      /* ---------- 导出：当前保管库 AES-GCM 加密备份 ---------- */
+      case 'MISC_EXPORT_VAULT': {
+        return requireUnlockResp(async () => {
+          const enc = await encryptExportBlob(__vaultPlain__!, __dk__!, __metaPlain__!);
+          return enc as ExportVaultResult;
+        });
+      }
+
+      /* ---------- 导入：解密备份 + 三策略合并 + 半提交回滚 ---------- */
+      case 'MISC_IMPORT_VAULT': {
+        return requireUnlockResp(async () => {
+          const pl = msg.payload as ImportVaultPayload;
+          const { vault: imported } = await decryptImportBlob(pl.blobB64, pl.masterPassword);
+          const totalInBackup = imported.items.length;
+          const snapshotBefore = JSON.stringify(__vaultPlain__!);
+          const snapshotMetaBefore = JSON.stringify(__metaPlain__!);
+          try {
+            const stats = mergeImportedVault(__vaultPlain__!, imported, pl.conflictStrategy as ImportConflictStrategy);
+            __metaPlain__ = await persistVault(__dk__!, __vaultPlain__!, __metaPlain__!);
+            Log.info('BG:IMPORT', `✅ 导入合并成功 strategy=${pl.conflictStrategy} added=${stats.added} skipped=${stats.skipped} conflicted=${stats.conflicted}`);
+            return {
+              added: stats.added,
+              skipped: stats.skipped,
+              conflicted: stats.conflicted,
+              totalInBackup,
+              vaultSnapshotAfter: JSON.parse(JSON.stringify(__vaultPlain__!)),
+            } as ImportVaultResult;
+          } catch (mergeErr) {
+            Log.warn('BG:IMPORT', `⚠️ 导入合并失败，回滚到导入前快照: ${(mergeErr as Error).message}`);
+            try {
+              __vaultPlain__ = JSON.parse(snapshotBefore) as VaultPlaintext;
+              __metaPlain__ = JSON.parse(snapshotMetaBefore) as VaultMetaPlain;
+              await chrome.storage.local.remove([STORAGE_KEYS.META, STORAGE_KEYS.VAULT_CIPHER]);
+            } catch (rbErr) {
+              Log.error('BG:IMPORT', `回滚 storage 失败: ${(rbErr as Error).message}`);
+            }
+            throw mergeErr;
+          }
         });
       }
 

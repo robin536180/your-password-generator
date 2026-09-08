@@ -220,41 +220,263 @@ export const addItem = (vault: VaultPlaintext, partial: Partial<Item> & Pick<Ite
   return newItem;
 };
 
+export class StoreError extends Error {
+  constructor(public code: string, msg?: string) {
+    super(msg ?? code);
+    this.name = 'StoreError';
+  }
+}
+
+export const ERR_CODES = {
+  ITEM_NOT_FOUND: 'ITEM_NOT_FOUND',
+  VERSION_CONFLICT: 'VERSION_CONFLICT',
+  NOT_TRASHED: 'NOT_TRASHED',
+  BAD_MASTER_PASSWORD: 'BAD_MASTER_PASSWORD',
+  DECRYPT_FAILED: 'DECRYPT_FAILED',
+  BACKUP_FORMAT_INVALID: 'BACKUP_FORMAT_INVALID',
+} as const;
+
+export const getItemById = (vault: VaultPlaintext, id: string): Item | null => {
+  const it = vault.items.find((x) => x.id === id) ?? null;
+  if (it) {
+    Log.debug('VAULT:ITEM:GET', `get id=${id.slice(0, 8)} found=${!!it}`);
+  }
+  return it;
+};
+
 export const updateItem = (vault: VaultPlaintext, id: string, patch: Partial<Item>): Item => {
   const idx = vault.items.findIndex((i) => i.id === id);
-  if (idx === -1) throw new Error(`Item ${id} 不存在`);
+  if (idx === -1) throw new StoreError(ERR_CODES.ITEM_NOT_FOUND, `Item ${id} 不存在`);
   const old = vault.items[idx];
   if (patch.version !== undefined && patch.version !== old.version) {
     Log.warn('VAULT:ITEM:UPDATE', `乐观锁冲突：期望 version=${old.version} 实际=${patch.version}`);
+    throw new StoreError(ERR_CODES.VERSION_CONFLICT, `version冲突 expected=${old.version} got=${patch.version}`);
   }
   const merged: Item = { ...old, ...patch, updatedAt: nowMs(), version: old.version + 1 } as Item;
   vault.items[idx] = merged;
-  Log.info('VAULT:ITEM:UPDATE', `更新 id=${id.slice(0, 8)}: changedKeys=${Object.keys(patch).join(',')}`);
+  Log.info('VAULT:ITEM:UPDATE', `更新 id=${id.slice(0, 8)}: changedKeys=${Object.keys(patch).join(',')} newVersion=${merged.version}`);
   return merged;
 };
 
-export const trashItem = (vault: VaultPlaintext, id: string): void => {
+export const trashItem = (vault: VaultPlaintext, id: string): Item => {
   const idx = vault.items.findIndex((i) => i.id === id);
-  if (idx === -1) return;
+  if (idx === -1) throw new StoreError(ERR_CODES.ITEM_NOT_FOUND, `Item ${id} 不存在`);
   const it = vault.items[idx];
+  if (it.trashed) {
+    Log.warn('VAULT:ITEM:TRASH', `id=${id.slice(0, 8)} 已在回收站，跳过`);
+    return it;
+  }
+  const now = nowMs();
   it.trashed = true;
-  it.trashedAt = nowMs();
-  const deleted: DeletedItem = { ...it, deletedAt: nowMs(), expireAt: nowMs() + 30 * 24 * 3600 * 1000 };
-  vault.deleted.push(deleted);
-  vault.items.splice(idx, 1);
-  Log.info('VAULT:ITEM:TRASH', `移入回收站 id=${id.slice(0, 8)} title="${it.title}"，30天后永久删除`);
+  it.trashedAt = now;
+  it.version += 1;
+  it.updatedAt = now;
+  const alreadyDeleted = vault.deleted.some((d) => d.id === id);
+  if (!alreadyDeleted) {
+    vault.deleted.push({
+      ...(JSON.parse(JSON.stringify(it)) as Item),
+      deletedAt: now,
+      expireAt: now + 30 * 24 * 3600 * 1000,
+    } as DeletedItem);
+  }
+  Log.info('VAULT:ITEM:TRASH', `移入回收站 id=${id.slice(0, 8)} title="${it.title}"，30天后自动永久删除`);
+  return it;
 };
 
-export const restoreItem = (vault: VaultPlaintext, id: string): void => {
-  const didx = vault.deleted.findIndex((d) => d.id === id);
-  if (didx === -1) return;
-  const d = vault.deleted[didx];
-  const { deletedAt, expireAt, ...restored } = d as DeletedItem & { deletedAt: number; expireAt: number };
-  restored.trashed = false;
-  restored.trashedAt = undefined;
-  vault.items.push(restored as unknown as Item);
-  vault.deleted.splice(didx, 1);
-  Log.info('VAULT:ITEM:RESTORE', `从回收站恢复 id=${id.slice(0, 8)}`);
+export const restoreItem = (vault: VaultPlaintext, id: string): Item => {
+  const idx = vault.items.findIndex((i) => i.id === id);
+  if (idx === -1) throw new StoreError(ERR_CODES.ITEM_NOT_FOUND, `Item ${id} 不存在`);
+  const it = vault.items[idx];
+  if (!it.trashed) {
+    Log.warn('VAULT:ITEM:RESTORE', `id=${id.slice(0, 8)} 不在回收站`);
+    return it;
+  }
+  const now = nowMs();
+  it.trashed = false;
+  it.trashedAt = undefined;
+  it.version += 1;
+  it.updatedAt = now;
+  const dIdx = vault.deleted.findIndex((d) => d.id === id);
+  if (dIdx >= 0) vault.deleted.splice(dIdx, 1);
+  Log.info('VAULT:ITEM:RESTORE', `从回收站恢复 id=${id.slice(0, 8)} title="${it.title}"`);
+  return it;
+};
+
+export const deleteItemPermanently = (vault: VaultPlaintext, id: string): string => {
+  const idx = vault.items.findIndex((i) => i.id === id);
+  if (idx === -1) throw new StoreError(ERR_CODES.ITEM_NOT_FOUND, `Item ${id} 不存在`);
+  const it = vault.items[idx];
+  if (!it.trashed) {
+    Log.warn('VAULT:ITEM:DELETE', `id=${id.slice(0, 8)} 尝试在未入回收站时永久删除，拒绝`);
+    throw new StoreError(ERR_CODES.NOT_TRASHED, `永久删除前必须先移入回收站`);
+  }
+  vault.items.splice(idx, 1);
+  const dIdx = vault.deleted.findIndex((d) => d.id === id);
+  if (dIdx >= 0) vault.deleted.splice(dIdx, 1);
+  Log.info('VAULT:ITEM:DELETE', `永久删除 id=${id.slice(0, 8)} title="${it.title}"`);
+  return id;
+};
+
+export const duplicateItem = (vault: VaultPlaintext, id: string): Item => {
+  const src = vault.items.find((i) => i.id === id);
+  if (!src) throw new StoreError(ERR_CODES.ITEM_NOT_FOUND, `Item ${id} 不存在`);
+  const clone: Item = JSON.parse(JSON.stringify(src));
+  clone.id = uuidv4();
+  clone.title = `${src.title} 副本`;
+  clone.version = 1;
+  clone.createdAt = nowMs();
+  clone.updatedAt = clone.createdAt;
+  clone.trashed = false;
+  clone.trashedAt = undefined;
+  clone.favorite = false;
+  clone.fields = clone.fields.map((f) => ({ ...f, id: uuidv4() }));
+  vault.items.push(clone);
+  Log.info('VAULT:ITEM:DUPLICATE', `克隆 id=${id.slice(0, 8)} → 新id=${clone.id.slice(0, 8)} title="${clone.title}"`);
+  return clone;
+};
+
+export const toggleFavoriteItem = (vault: VaultPlaintext, id: string): { id: string; favorite: boolean } => {
+  const idx = vault.items.findIndex((i) => i.id === id);
+  if (idx === -1) throw new StoreError(ERR_CODES.ITEM_NOT_FOUND, `Item ${id} 不存在`);
+  const it = vault.items[idx];
+  it.favorite = !it.favorite;
+  it.version += 1;
+  it.updatedAt = nowMs();
+  Log.info('VAULT:ITEM:FAV', `切换收藏 id=${id.slice(0, 8)} favorite=${it.favorite}`);
+  return { id, favorite: it.favorite };
+};
+
+export type ImportConflictStrategy = 'keep-new' | 'keep-old' | 'duplicate-both';
+
+export interface EncryptedBackupBlob {
+  schemaVersion: number;
+  exportedAt: number;
+  accountEmail: string;
+  secretKeyMasked: string;
+  saltHex: string;
+  pbkdf2Iterations: number;
+  verifierB64: string;
+  cipherB64: string;
+}
+
+export interface EncryptExportResult {
+  blobB64: string;
+  fileName: string;
+  sizeBytes: number;
+}
+
+export const encryptExportBlob = async (
+  vault: VaultPlaintext,
+  dk: CryptoKey,
+  meta: VaultMetaPlain,
+): Promise<EncryptExportResult> => {
+  const json = JSON.stringify(vault);
+  const cipherB64 = await encryptAesGcm(dk, json);
+  const backup: EncryptedBackupBlob = {
+    schemaVersion: CRYPTO_CONFIG.VAULT_SCHEMA_VERSION,
+    exportedAt: nowMs(),
+    accountEmail: meta.accountEmail,
+    secretKeyMasked: meta.secretKeyMasked,
+    saltHex: meta.saltHex,
+    pbkdf2Iterations: meta.pbkdf2Iterations,
+    verifierB64: meta.verifierB64,
+    cipherB64,
+  };
+  const full = JSON.stringify(backup);
+  const safeEmail = (meta.accountEmail || 'local').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const d = new Date(backup.exportedAt);
+  const ts = `${d.getFullYear()}${(d.getMonth() + 1).toString().padStart(2, '0')}${d.getDate().toString().padStart(2, '0')}_${d.getHours().toString().padStart(2, '0')}${d.getMinutes().toString().padStart(2, '0')}${d.getSeconds().toString().padStart(2, '0')}`;
+  const fileName = `1PassClone_Backup_${safeEmail}_${ts}.enc.json`;
+  const blobB64 = btoa(unescape(encodeURIComponent(full)));
+  Log.info('VAULT:EXPORT', `导出备份 ${fileName} size=${full.length} items=${vault.items.length}`);
+  return {
+    blobB64,
+    fileName,
+    sizeBytes: full.length,
+  };
+};
+
+const parseBackup = (blobB64: string): EncryptedBackupBlob => {
+  try {
+    const jsonText = decodeURIComponent(escape(atob(blobB64)));
+    const obj = JSON.parse(jsonText) as EncryptedBackupBlob;
+    if (!obj || typeof obj !== 'object' || !obj.cipherB64 || !obj.saltHex || !obj.verifierB64) {
+      throw new Error('结构缺失');
+    }
+    return obj;
+  } catch (e) {
+    Log.warn('VAULT:IMPORT', `备份格式无效: ${(e as Error).message}`);
+    throw new StoreError(ERR_CODES.BACKUP_FORMAT_INVALID, '备份文件格式损坏或不是有效的 1PassClone 备份');
+  }
+};
+
+export const decryptImportBlob = async (
+  blobB64: string,
+  importedMasterPassword: string,
+): Promise<{ vault: VaultPlaintext; backup: EncryptedBackupBlob }> => {
+  const backup = parseBackup(blobB64);
+  let dk: CryptoKey;
+  try {
+    const { dk: derived } = await deriveMasterKeyBySalt(
+      importedMasterPassword,
+      backup.saltHex,
+      backup.pbkdf2Iterations,
+    );
+    const ok = await verifyDk(derived, backup.verifierB64);
+    if (!ok) throw new Error('verifier 不匹配');
+    dk = derived;
+  } catch (e) {
+    Log.warn('VAULT:IMPORT', `导入备份主密码错误: ${(e as Error).message}`);
+    throw new StoreError(ERR_CODES.BAD_MASTER_PASSWORD, '备份主密码错误，无法解密');
+  }
+  try {
+    const plain = await decryptAesGcm(dk, backup.cipherB64);
+    const vault = JSON.parse(plain) as VaultPlaintext;
+    if (!vault || typeof vault !== 'object' || !Array.isArray(vault.items)) {
+      throw new Error('VaultPlaintext 结构非法');
+    }
+    Log.info('VAULT:IMPORT', `解密导入备份成功 items=${vault.items.length} account=${backup.accountEmail}`);
+    return { vault, backup };
+  } catch (e) {
+    Log.error('VAULT:IMPORT', `解密导入密文失败 (AuthTag 不匹配，可能篡改): ${(e as Error).message}`);
+    throw new StoreError(ERR_CODES.DECRYPT_FAILED, '备份密文无法解密（可能被篡改或损坏）');
+  }
+};
+
+export const mergeImportedVault = (
+  current: VaultPlaintext,
+  imported: VaultPlaintext,
+  strategy: ImportConflictStrategy,
+): { added: number; skipped: number; conflicted: number } => {
+  const existingMap = new Map(current.items.map((i) => [i.id, i]));
+  let added = 0, skipped = 0, conflicted = 0;
+  for (const src of imported.items) {
+    const existing = existingMap.get(src.id);
+    if (!existing) {
+      current.items.push(JSON.parse(JSON.stringify(src)));
+      added++;
+      continue;
+    }
+    conflicted++;
+    if (strategy === 'keep-new') {
+      skipped++;
+    } else if (strategy === 'keep-old') {
+      const idx = current.items.findIndex((x) => x.id === src.id);
+      if (idx >= 0) current.items[idx] = JSON.parse(JSON.stringify(src));
+    } else if (strategy === 'duplicate-both') {
+      const clone: Item = JSON.parse(JSON.stringify(src));
+      clone.id = uuidv4();
+      clone.title = `${src.title}（导入备份）`;
+      clone.version = 1;
+      clone.createdAt = nowMs();
+      clone.updatedAt = clone.createdAt;
+      clone.fields = clone.fields.map((f) => ({ ...f, id: uuidv4() }));
+      current.items.push(clone);
+      added++;
+    }
+  }
+  Log.info('VAULT:MERGE', `合并导入策略=${strategy} added=${added} skipped=${skipped} conflicted=${conflicted}`);
+  return { added, skipped, conflicted };
 };
 
 export const updateSettings = (vault: VaultPlaintext, patch: Partial<AppSettings>): AppSettings => {

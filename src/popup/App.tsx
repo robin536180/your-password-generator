@@ -7,6 +7,7 @@ import { RegisterScreen } from '@/screens/RegisterScreen';
 import { UnlockScreen } from '@/screens/UnlockScreen';
 import { HomeScreen } from '@/screens/HomeScreen';
 import { Log } from '@/core/logger';
+import { ipcCall } from '@/store/vaultStore';
 
 export const PopupApp: React.FC = () => {
   const status = useVaultStore((s) => s.status);
@@ -14,6 +15,10 @@ export const PopupApp: React.FC = () => {
   const [forceRegister, setForceRegister] = React.useState(false);
 
   useEffect(() => {
+    // Warmup: 立即发一次最轻量的 IPC 来强制唤醒 MV3 Service Worker，
+    // 吸收冷启动竞态窗口（sendMessage 会触发 SW 启动）。即使这一次返回 Receiving-end，
+    // ipcCall 内部的 3 次重试机制也会自动兜底。
+    ipcCall('VAULT_EXISTS').catch(() => {});
     refresh();
     Log.info('POPUP:MOUNT', `Popup 打开，session=${useVaultStore.getState().sessionId}, init status=${status}`);
   }, []); // eslint-disable-line
@@ -37,6 +42,8 @@ export const PopupApp: React.FC = () => {
   };
 
   return (
-    <div className="h-full w-full flex flex-col">{renderByStatus()}</div>
+    <div className="h-full w-full flex flex-col relative">
+      {renderByStatus()}
+    </div>
   );
 };

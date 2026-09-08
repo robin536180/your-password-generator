@@ -16,6 +16,7 @@ import type {
   VaultMetaPlain,
   VaultPlaintext,
 } from '@/types/models';
+import type { ImportConflictStrategy, EncryptExportResult } from '@/core/vault-store';
 
 export type VaultAction =
   /* ================= 初始化 / 生命周期 ================= */
@@ -46,7 +47,10 @@ export type VaultAction =
   | 'SETTINGS_GET'
   | 'SETTINGS_UPDATE'
   /* ================= Watchtower 1个 ================= */
-  | 'WATCHTOWER_SCAN';      // 扫描全库：重复/弱密码/过期（纯本地，不联网）
+  | 'WATCHTOWER_SCAN'       // 扫描全库：重复/弱密码/过期（纯本地，不联网）
+  /* ================= 导入导出 2个 ================= */
+  | 'MISC_EXPORT_VAULT'     // AES-GCM 加密导出备份（返回 Base64 下载）
+  | 'MISC_IMPORT_VAULT';    // 解密备份 + 三策略合并（失败回滚半提交）
 
 export type VaultStatus = 'UNINITIALIZED' | 'LOCKED' | 'UNLOCKED';
 
@@ -87,6 +91,7 @@ export interface StatusResult {
   lockedUntilMs: number | null;
   itemCount: number | null;     // UNINITIALIZED/LOCKED → null
   autoLockMinutes: number | null;
+  vaultSnapshot?: VaultPlaintext; // UNLOCKED 时返回明文保管库快照，供独立 tab 的 zustand store 同步
 }
 
 export interface ItemListPayload {
@@ -117,6 +122,24 @@ export interface WatchtowerScanResult {
   totals: { weak: number; reused: number; notHttps: number; oldPasswords: number; totalItems: number };
 }
 
+export interface ExportVaultPayload {
+  /* 保留：导出用当前 DK 加密，无需额外参数 */
+}
+export type ExportVaultResult = EncryptExportResult; // { blobB64, fileName, sizeBytes }
+
+export interface ImportVaultPayload {
+  blobB64: string;                 // 用户上传的 .enc.json 内容 → btoa 后
+  masterPassword: string;          // 备份文件主密码（可能和当前保管库密码不同）
+  conflictStrategy: ImportConflictStrategy; // keep-new / keep-old / duplicate-both
+}
+export interface ImportVaultResult {
+  added: number;
+  skipped: number;
+  conflicted: number;
+  totalInBackup: number;
+  vaultSnapshotAfter: VaultPlaintext;
+}
+
 /* ---------- 联合类型导出（Background handler 做 switch） ---------- */
 export type VaultMessage =
   | ({ action: 'VAULT_EXISTS' } & VaultMessageBase)
@@ -140,4 +163,6 @@ export type VaultMessage =
   | ({ action: 'TAG_CREATE'; payload: TagCreatePayload } & VaultMessageBase)
   | ({ action: 'SETTINGS_GET' } & VaultMessageBase)
   | ({ action: 'SETTINGS_UPDATE'; payload: SettingsUpdatePayload } & VaultMessageBase)
-  | ({ action: 'WATCHTOWER_SCAN' } & VaultMessageBase);
+  | ({ action: 'WATCHTOWER_SCAN' } & VaultMessageBase)
+  | ({ action: 'MISC_EXPORT_VAULT'; payload?: ExportVaultPayload } & VaultMessageBase)
+  | ({ action: 'MISC_IMPORT_VAULT'; payload: ImportVaultPayload } & VaultMessageBase);
