@@ -158,7 +158,8 @@ export const unlockVault = async (masterPassword: string): Promise<UnlockResult>
   try {
     const cipher = (await chrome.storage.local.get([STORAGE_KEYS.VAULT_CIPHER]))[STORAGE_KEYS.VAULT_CIPHER] as string;
     const pt = await decryptAesGcm(dkReal, cipher);
-    const vault = JSON.parse(pt) as VaultPlaintext;
+    const vaultRaw = JSON.parse(pt) as VaultPlaintext;
+    const vault = migrateVaultPlaintext(vaultRaw);  // ⭐ M2→M3 schema 迁移：补齐 autofill 字段
     Log.info('VAULT:UNLOCK', `✅ 主密码正确，保管库解密完成 items=${vault.items.length}`);
     return { dk: dkReal, vault, meta };
   } catch (e) {
@@ -431,7 +432,8 @@ export const decryptImportBlob = async (
   }
   try {
     const plain = await decryptAesGcm(dk, backup.cipherB64);
-    const vault = JSON.parse(plain) as VaultPlaintext;
+    const vaultRaw = JSON.parse(plain) as VaultPlaintext;
+    const vault = migrateVaultPlaintext(vaultRaw);  // ⭐ 导入时自动 schema 迁移，补齐缺失字段
     if (!vault || typeof vault !== 'object' || !Array.isArray(vault.items)) {
       throw new Error('VaultPlaintext 结构非法');
     }
@@ -480,10 +482,35 @@ export const mergeImportedVault = (
 };
 
 export const updateSettings = (vault: VaultPlaintext, patch: Partial<AppSettings>): AppSettings => {
-  vault.settings = { ...vault.settings, ...patch };
+  vault.settings = { ...migrateSettings(vault.settings), ...patch };
   Log.info('VAULT:SETTINGS', `更新 settings: ${Object.keys(patch).join(',')}`);
   return vault.settings;
 };
+
+/**
+ * Settings Schema 向前兼容迁移（M2 → M3 自动填充字段补齐）。
+ *   - 任何从密文 JSON.parse 拿到的 settings，在进入 BG 闭包 / UI / IPC 返回之前，都必须走这里
+ *   - 保证所有 autofill* 字段永远是定义值（不会 undefined 导致 UI 层 undefined.join 报错）
+ *   - 未来 M4 有新字段只要把 DEFAULT_SETTINGS 里补默认 + 这里保持 `{...DEFAULT_SETTINGS, ...s}` 模式即可自动兼容
+ */
+export function migrateSettings(s: Partial<AppSettings> | null | undefined): AppSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...(s ?? {}),
+    // ⭐ 数组字段强制兜底：如果老保管库里 JSON 把字段设成 null / undefined / 非数组 → 强转空数组（防 undefined.join）
+    safeForTravelVaultIds: Array.isArray((s ?? {}).safeForTravelVaultIds) ? (s as any).safeForTravelVaultIds : [],
+  };
+}
+
+/** 整库迁移（目前只做 settings，未来 M4 有 item schema 升级也放这里） */
+export function migrateVaultPlaintext(v: VaultPlaintext): VaultPlaintext {
+  const migrated: VaultPlaintext = { ...v, settings: migrateSettings(v.settings as any) };
+  if (!Array.isArray(migrated.items)) migrated.items = [];
+  if (!Array.isArray(migrated.vaults)) migrated.vaults = [];
+  if (!Array.isArray(migrated.tags)) migrated.tags = [];
+  if (!Array.isArray(migrated.deleted)) migrated.deleted = [];
+  return migrated;
+}
 
 /* ============ 工具函数 ============ */
 

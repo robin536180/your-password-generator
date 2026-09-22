@@ -27,6 +27,7 @@ import type {
 import type { AppSettings, Item, VaultMetaPlain, VaultPlaintext } from '@/types/models';
 import type { ImportConflictStrategy } from '@/core/vault-store';
 import { Log } from '@/core/logger';
+import { migrateVaultPlaintext, migrateSettings } from '@/core/vault-store';
 
 const REQ_ID_PREFIX = 'ui';
 let __reqSeq = 0;
@@ -110,6 +111,7 @@ export interface VaultStoreState {
 
   /* ---------- 方法：生命周期 ---------- */
   refreshStatus: () => Promise<void>;
+  /** 状态同步：确保 UI 显示的 LOCKED/UNLOCKED 与 BG 闭包一致。 */
   registerVault: (p: InitPayload) => Promise<{ ok: boolean; secretKey?: string; error?: string }>;
   unlockVault: (p: UnlockPayload) => Promise<{ ok: boolean; error?: string; code?: string }>;
   lockVault: () => Promise<void>;
@@ -148,13 +150,16 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   refreshStatus: async () => {
     const r = await ipcCall<StatusResult>('VAULT_STATUS');
     if (!r.ok) return;
-    const { status, meta, failedAttempts, lockedUntilMs, itemCount, autoLockMinutes } = r.data;
-    // ⭐ Fix: 如果 BG 已解锁并返回了明文快照 → 立即写入当前 zustand（支持 Options 独立新 tab 同步）
-    const vaultPlain: VaultPlaintext | null | undefined = (r.data as any).vaultSnapshot;
-    const nextSnapshot = vaultPlain ?? (status === 'UNLOCKED' ? get().vaultSnapshot : null);
+    const { status, meta, failedAttempts, lockedUntilMs, itemCount } = r.data;
+    const vaultPlainRaw: VaultPlaintext | null | undefined = (r.data as any).vaultSnapshot;
+    // ⭐ 两层兜底：① BG 返回了 migrate 后的快照 → 这里再 migrate 一次不费 CPU；② BG 没返回（极端竞态）→ 老快照也 migrate 再入 store
+    const vaultPlainMigrated = vaultPlainRaw ? migrateVaultPlaintext(vaultPlainRaw) : null;
+    const currentMigrated = (get().vaultSnapshot ?? undefined) ? migrateVaultPlaintext(get().vaultSnapshot!) : null;
+    const nextSnapshot = vaultPlainMigrated ?? (status === 'UNLOCKED' ? currentMigrated : null);
+    const aLockMin = migrateSettings(nextSnapshot?.settings as any).autoLockMinutes;
     Log.info(
       'STORE:STATUS',
-      `refresh → ${status}, failed=${failedAttempts}, items=${vaultPlain ? `${vaultPlain.items.length}(from BG)` : (itemCount ?? 'N/A')}`,
+      `refresh → ${status}, failed=${failedAttempts}, items=${nextSnapshot ? `${nextSnapshot.items.length}(migrated)` : (itemCount ?? 'N/A')}`,
     );
     set({
       status,
@@ -162,7 +167,7 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
       failedAttempts,
       lockedUntilMs,
       remainingAttempts: Math.max(0, 5 - failedAttempts),
-      autoLockMinutes: autoLockMinutes ?? 10,
+      autoLockMinutes: Number.isFinite(aLockMin) ? aLockMin : 10,
       vaultSnapshot: nextSnapshot,
     });
   },
@@ -170,7 +175,22 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   registerVault: async (p) => {
     const r = await ipcCall<InitResult>('VAULT_INIT', p as unknown as Record<string, unknown>);
     if (!r.ok) return { ok: false, error: r.error };
-    set({ status: 'LOCKED', meta: r.data.meta, failedAttempts: 0, lockedUntilMs: null, remainingAttempts: 5 });
+    // ⭐ BUGFIX：INIT 成功后状态彻底清洗
+    //   1) vaultSnapshot 强制 null —— 绝不允许残留的旧快照「伪造已解锁」(UI snap 非空导致显示「已解锁」但 BG 实际 LOCKED 从而创建报错)
+    //   2) 如果 BG INIT 做了自动解锁（autoUnlocked=true）— 则本 UI store 也同步 UNLOCKED，UI/BG 状态一致
+    //   3) 如果 BG 没自动解锁（未来 fallback）— 保持 LOCKED 等待用户主动解锁
+    const snapRaw = r.data.vaultSnapshot;
+    const snapMigrated = snapRaw ? migrateVaultPlaintext(snapRaw) : null;
+    const isAutoUnlocked = Boolean(r.data.autoUnlocked && snapMigrated);
+    set({
+      status: isAutoUnlocked ? 'UNLOCKED' : 'LOCKED',
+      meta: r.data.meta,
+      vaultSnapshot: isAutoUnlocked ? snapMigrated : null,  // ⭐ 最关键：非 autoUnlocked 就清空，绝不保留
+      failedAttempts: 0,
+      lockedUntilMs: null,
+      remainingAttempts: 5,
+      autoLockMinutes: migrateSettings((snapMigrated ?? undefined)?.settings as any).autoLockMinutes ?? 10,
+    });
     return { ok: true, secretKey: r.data.secretKey };
   },
 
@@ -186,11 +206,12 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     set({
       status: 'UNLOCKED',
       meta: r.data.meta,
-      vaultSnapshot: r.data.vaultSnapshot,
+      // ⭐ UI 状态机最后一层兜底 migrate：任何 BG 下发的快照都过 migrateVaultPlaintext，确保老保管库 settings 缺字段不崩
+      vaultSnapshot: migrateVaultPlaintext(r.data.vaultSnapshot),
       failedAttempts: 0,
       lockedUntilMs: r.data.lockedUntilMs ?? null,
       remainingAttempts: 5,
-      autoLockMinutes: r.data.vaultSnapshot.settings.autoLockMinutes,
+      autoLockMinutes: migrateSettings((r.data.vaultSnapshot as any)?.settings).autoLockMinutes,
     });
     return { ok: true };
   },
@@ -216,7 +237,14 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
 
   createItem: async (partial) => {
     const r = await ipcCall<Item>('ITEM_CREATE', partial as unknown as Record<string, unknown>);
-    if (!r.ok) return null;
+    if (!r.ok) {
+      Log.warn('STORE:CREATE', `ITEM_CREATE 失败 code=${r.code ?? '-'} err=${r.error ?? '-'}`);
+      /* ⭐ 失败时把 IPC 错误原因挂到 Error 上，UI 侧 try/catch 能读 message，不再是「保存失败 未知错误」 */
+      const e: any = new Error(r.error ?? '保存失败');
+      e.code = r.code ?? 'ITEM_CREATE_FAILED';
+      e.rawResp = r;
+      throw e;
+    }
     const snap = get().vaultSnapshot;
     if (snap) {
       set({ vaultSnapshot: { ...snap, items: [r.data, ...snap.items] } });
@@ -227,8 +255,11 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   updateItem: async (patch) => {
     const r = await ipcCall<Item>('ITEM_UPDATE', patch as unknown as Record<string, unknown>);
     if (!r.ok) {
-      Log.warn('STORE:UPDATE', `乐观锁或更新失败 code=${r.code} id=${patch.id}`);
-      return null;
+      Log.warn('STORE:UPDATE', `ITEM_UPDATE 失败 code=${r.code ?? '-'} err=${r.error ?? '-'} id=${patch.id ?? '-'}`);
+      const e: any = new Error(r.error ?? '保存失败');
+      e.code = r.code ?? 'ITEM_UPDATE_FAILED';
+      e.rawResp = r;
+      throw e;
     }
     const snap = get().vaultSnapshot;
     if (snap) {
@@ -341,7 +372,9 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     const r = await ipcCall<AppSettings>('SETTINGS_UPDATE', { patch });
     if (!r.ok) return false;
     const snap = get().vaultSnapshot;
-    if (snap) set({ vaultSnapshot: { ...snap, settings: r.data as AppSettings } });
+    // ⭐ migrateSettings：确保 SETTINGS_UPDATE 返回的 settings 经 merge 后没有缺失字段
+    const mergedSettings = migrateSettings(r.data);
+    if (snap) set({ vaultSnapshot: { ...snap, settings: mergedSettings } });
     return true;
   },
 }));

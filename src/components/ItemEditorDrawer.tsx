@@ -17,7 +17,8 @@ import {
   GripVertical, ChevronUp, ChevronDown as ChevronDownIcon, Settings2, Type, Key, Mail, Globe2, CalendarDays, Phone, Hash, FileText, Eye,
 } from 'lucide-react';
 import { cn, uuidv4 } from '@/lib/utils';
-import { useVaultStore } from '@/store/vaultStore';
+import { useVaultStore, ipcCall as _storeIpcCall } from '@/store/vaultStore';
+import { Log as _coreLog } from '@/core/logger';
 import type { Item, ItemCategory, Field } from '@/types/models';
 import { CATEGORY_LABELS, CATEGORY_ICON } from '@/screens/HomeScreen';
 import {
@@ -399,6 +400,7 @@ export const ItemEditorDrawer: React.FC<ItemEditorDrawerProps> = ({
   const updateItem = useVaultStore((s) => s.updateItem);
   const duplicateItem = useVaultStore((s) => s.duplicateItem);
   const currentSnapshot = useVaultStore((s) => s.vaultSnapshot);
+  const refreshStatus = useVaultStore((s) => s.refreshStatus);
 
   const [draft, setDraft] = useState<EditorDraft>(() =>
     mode === 'edit' && initialItem ? itemToDraft(initialItem) : makeEmptyDraft(initialCategory),
@@ -478,9 +480,37 @@ export const ItemEditorDrawer: React.FC<ItemEditorDrawerProps> = ({
           return;
         }
       }
-      pushToast('error', '保存失败', '未知错误（详见后台日志）');
-    } catch (err) {
-      pushToast('error', '保存异常', String(err));
+      /* 兜底：store 返回 null 但没抛错（理论不应到达，防未来回归）→ 再发一次请求拿具体错误 */
+      const snoop = await _storeIpcCall<Item>(
+        mode === 'create' ? 'ITEM_CREATE' : 'ITEM_UPDATE',
+        (mode === 'create'
+          ? { ...payload, category: draft.category, title: payload.title, fields: draft.fields }
+          : { ...payload, id: draft.id! }) as any,
+      );
+      const detail = (!snoop.ok && (snoop.error || snoop.code))
+        ? `${snoop.error}${snoop.code ? ` [code=${snoop.code}]` : ''}`
+        : '保存失败（请打开扩展 DevTools → Service Worker → Console 查看完整 ERROR 日志）';
+      try {
+        _coreLog.error('EDITOR:SAVE_FAIL', `保存失败(兜底路径) mode=${mode} draft=${JSON.stringify({ id: draft.id, title: draft.title, category: draft.category, fieldsCount: draft.fields.length })} snoop=${JSON.stringify(snoop)}`);
+      } catch { /* ignore */ }
+      pushToast('error', '保存失败', detail);
+    } catch (err: any) {
+      /* ⭐ createItem/updateItem 现在 IPC 失败会抛带 message 的 Error，直接取 err.message 就是具体原因！
+         —— 例: "保管库未解锁，请先解锁 [code=LOCKED]" / "标题不能为空" / "乐观锁冲突版本不一致 [code=VERSION_CONFLICT]" */
+      const msg: string = err?.message ?? String(err ?? '保存异常');
+      const code: string | undefined = err?.code;
+      const full = code ? `${msg} [code=${code}]` : msg;
+      try {
+        _coreLog.error('EDITOR:SAVE_FAIL', `保存异常 mode=${mode} err=${full}`);
+      } catch { /* ignore */ }
+      /* ⭐ M3-BF10 修复：BG 返回 LOCKED 说明 Service Worker 被回收导致内存密钥丢失（MV3 固有）。
+       *   先弹提示，再延迟跳转解锁界面 —— toast 在组件内部，立即跳转会导致抽屉卸载、toast 丢失。 */
+      if (code === 'LOCKED') {
+        pushToast('warn', '保管库已锁定，请重新解锁');
+        window.setTimeout(() => { void refreshStatus(); }, 1200);
+      } else {
+        pushToast('error', '保存失败', full);
+      }
     }
     setSaving(false);
   };

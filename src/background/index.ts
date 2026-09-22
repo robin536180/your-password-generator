@@ -56,6 +56,7 @@ import {
   mergeImportedVault,
   ERR_CODES as VS_ERR,
   StoreError,
+  migrateVaultPlaintext,
 } from '@/core/vault-store';
 import type { ImportConflictStrategy } from '@/core/vault-store';
 import { Log } from '@/core/logger';
@@ -86,7 +87,7 @@ const setLockedUntilBackoff = () => {
 
 const requireUnlock = () => {
   if (!__dk__ || !__vaultPlain__ || !__metaPlain__) {
-    throw new Error('保管库未解锁，请先解锁');
+    throw new StoreError('LOCKED', '保管库未解锁，请先解锁');
   }
   return { dk: __dk__, vault: __vaultPlain__, meta: __metaPlain__ };
 };
@@ -146,7 +147,7 @@ try {
 }
 
 /* =============================================================
- * onMessage 路由（20 个 Action）
+ * onMessage 路由（Action）
  * ============================================================= */
 chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) => {
   const requestId = msg.requestId;
@@ -177,8 +178,8 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
           lockedUntilMs: __lockedUntilMs && __lockedUntilMs > nowMs() ? __lockedUntilMs : null,
           itemCount: __vaultPlain__ ? __vaultPlain__.items.length : null,
           autoLockMinutes: __vaultPlain__?.settings.autoLockMinutes ?? null,
-          // ⭐ Fix: 当 BG 已解锁时把明文快照一并返回，Popup/Options 独立 tab 的 zustand 实例可直接同步
-          vaultSnapshot: __dk__ && __vaultPlain__ ? __vaultPlain__ : undefined,
+          // ⭐ M2→M3 迁移：返回快照前 migrate 补齐 settings（老保管库缺 autofill* 字段）
+          vaultSnapshot: __dk__ && __vaultPlain__ ? migrateVaultPlaintext(__vaultPlain__) : undefined,
         });
       }
 
@@ -188,11 +189,27 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
         try {
           const r = await initializeEmptyVault(pl.masterPassword, pl.accountEmail, pl.secretKey);
           __metaPlain__ = r.meta;
-          Log.info('BG:INIT', `保管库初始化成功，meta.salt=${r.meta.saltHex.slice(0, 16)}...`);
+          // ⭐ BUGFIX：INIT 完成后立即在 BG 内部解锁一次，把 __dk__/__vaultPlain__ 填好
+          //   —— 原问题：INIT 只设 __metaPlain__，BG 闭包内 __dk__=null，UI registerVault 成功后
+          //     ① 显示 LOCKED（老逻辑）或 ② 显示 UNLOCKED（残留的旧 vaultSnapshot 或 refresh 误判）
+          //     但 BG 永远是 LOCKED → 创建 item 抛「保管库未解锁」。
+          //   现在统一行为：注册完立刻解锁（密码用户刚输入过是正确的，符合主流密码管理器体验）
+          const { dk, vault, meta } = await unlockVault(pl.masterPassword);
+          __dk__ = dk;
+          __vaultPlain__ = vault;
+          __metaPlain__ = meta;
+          (__vaultPlain__ as any).settings.lastUnlockAt = nowMs();
+          (__vaultPlain__ as any).settings.failedAttempts = 0;
+          __failedAttempts = 0;
+          __lockedUntilMs = null;
+          __metaPlain__ = await persistVault(__dk__!, __vaultPlain__!, __metaPlain__!);
+          Log.info('BG:INIT', `保管库初始化成功 + 自动解锁完成，meta.salt=${r.meta.saltHex.slice(0, 16)}...`);
           return wrapOk<InitResult>({
             secretKey: r.secretKey,
-            meta: r.meta,
+            meta: __metaPlain__!,
             emptyVaultItemsCount: 0,
+            vaultSnapshot: migrateVaultPlaintext(__vaultPlain__!),
+            autoUnlocked: true,
           });
         } catch (e: any) {
           return wrapErr(e.message ?? String(e));
@@ -219,7 +236,7 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
           Log.info('BG:UNLOCK', `✅ 解锁成功 items=${vault.items.length} vaults=${vault.vaults.length}`);
           return wrapOk<UnlockResult>({
             meta: __metaPlain__!,
-            vaultSnapshot: __vaultPlain__!,
+            vaultSnapshot: migrateVaultPlaintext(__vaultPlain__!),  // ⭐ M2→M3 settings 迁移后再下发
             lockedUntilMs: undefined,
             remainingAttempts: MAX_FAILED_BEFORE_LOCK,
           });
@@ -473,7 +490,7 @@ chrome.runtime.onMessage.addListener((msg: VaultMessage, _sender, sendResponse) 
               skipped: stats.skipped,
               conflicted: stats.conflicted,
               totalInBackup,
-              vaultSnapshotAfter: JSON.parse(JSON.stringify(__vaultPlain__!)),
+              vaultSnapshotAfter: migrateVaultPlaintext(JSON.parse(JSON.stringify(__vaultPlain__!))),
             } as ImportVaultResult;
           } catch (mergeErr) {
             Log.warn('BG:IMPORT', `⚠️ 导入合并失败，回滚到导入前快照: ${(mergeErr as Error).message}`);

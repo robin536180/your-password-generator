@@ -72,6 +72,8 @@ export interface InitResult {
   secretKey: string;           // 完整格式 Secret Key（UI需强制用户下载紧急工具包）
   meta: VaultMetaPlain;
   emptyVaultItemsCount: number;
+  vaultSnapshot?: VaultPlaintext;  // ⭐ M3 BUGFIX：INIT 成功后 BG 自动解锁 1 次 → 下发快照，UI 直接进入 UNLOCKED（避免 LOCKED/BG 未解锁状态错位）
+  autoUnlocked?: boolean;          // ⭐ 是否本次 INIT 后 BG 已自动解锁（true=UI 直接用 status=UNLOCKED）
 }
 
 export interface UnlockPayload {

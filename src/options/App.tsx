@@ -641,7 +641,13 @@ const SettingsPanel: React.FC<{
       </div>
     );
   }
-  const s = snap.settings;
+  const rawS = snap.settings;
+  // ⭐ UI 层最后兜底：防止从 background IPC（极端情况下）返回的 settings 缺字段。
+  //    任何 undefined/null → 用 DEFAULT_SETTINGS 对应默认，数组字段强制空数组。
+  const s = {
+    ...rawS,
+    safeForTravelVaultIds: Array.isArray((rawS as any)?.safeForTravelVaultIds) ? (rawS as any).safeForTravelVaultIds : [],
+  };
 
   const patch = async (p: any) => {
     await update(p);

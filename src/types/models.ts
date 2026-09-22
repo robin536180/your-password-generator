@@ -51,6 +51,9 @@ export interface Field {
   label: string;              // 显示名（"用户名"、"CVV"等）
   type: FieldType;
   value: string;              // 值（password/concealed 显示为 ****）
+  /** 用于 autofill 分类：primary_username / primary_password / otp_secret / cvv / card_number ...
+   *  M3 新增：用于 BG Commit 时不用猜字段 label 语言（中/英/德），可精确查找 */
+  purpose?: string;
   /** password 字段专用：修改时间和熵值（用于Watchtower） */
   updatedAt?: number;
   entropyBits?: number;
@@ -79,6 +82,7 @@ export interface Item {
   vaultId: string;                         // 所属保管库
   category: ItemCategory;                  // 24种分类
   title: string;                           // 标题（搜索/展示主字段）
+  iconEmoji?: string;                      // 列表头部 emoji（无则默认 🔑）
   favorite?: boolean;                      // ⭐ 收藏置顶
   tags: string[];                          // 标签（云同步多对多）
   fields: Field[];                         // 模板字段（按 category 预置）
