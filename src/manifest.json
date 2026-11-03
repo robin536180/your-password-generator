@@ -36,6 +36,9 @@
     "alarms",
     "tabs"
   ],
+  "host_permissions": [
+    "https://api.pwnedpasswords.com/*"
+  ],
   "web_accessible_resources": [
     {
       "resources": [

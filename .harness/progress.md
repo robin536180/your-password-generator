@@ -265,3 +265,88 @@
   4. 零知识审计（F12 Application Local Storage 搜 6 关键词：password/pwd/master/dk/A3-/1p-unlock-verifier-v1）→ **全部无命中** ✅；只能看到 `__1p_meta__`（明文 saltHex/verifierB64/secretKeyMasked/accountEmail/pbkdf2Iterations=650000）+ `__1p_vault_cipher__`（Base64 密文 Blob）
 
 → **M1 阶段 9 大里程碑 + 5 个 E2E 手测 Bug 全部 100% 闭环通过用户验收。下一阶段：M2 启动（密码生成器 React 组件 + 24 分类 Item 编辑器 + Watchtower MVP 弱密码检测）**
+
+---
+
+## 2026-10-27 M3 收尾：TOTP UI + HIBP 泄露检测 + 生成器独立入口
+
+### 阶段24：TOTP 接入字段 UI ✅
+- **操作**: `src/components/FieldRenderer.tsx` 新增 `TotpField` 组件，替换原 `case 'otp'`
+- **实现**: 每秒调用 `totpNow()` 刷新 6/8 位码；SVG 圆环按 `remaining/period` 计算 `strokeDasharray`；复制后 20s 自动清剪贴板；编辑模式可折叠展开种子输入
+- **验证**: typecheck / build / vitest 三验全绿，用户真机确认「Ok 了」
+
+### 阶段25：HIBP k-匿名泄露检测 ✅
+- **新增** `src/core/hibp.ts`：
+  - `sha1HexUpper()`：`crypto.subtle.digest('SHA-1')` → 40 位大写 hex
+  - `checkPasswordPwned()`：只把前 5 位发往 `api.pwnedpasswords.com/range/{prefix}`，带 `Add-Padding: true`，10s 超时 AbortController，本地比对剩余 35 位
+  - `scanBreachedPasswords()`：只扫未删除项目的 `type==='password'` 字段 → `Set` 去重 → 3 并发 worker → 单请求失败只计 `failedPasswords` 不中断 → 结果按泄露次数降序
+  - 日志仅输出统计数字（密码数/命中数/失败数/耗时），**绝不含明文密码**
+- **manifest**: 新增最小 `host_permissions: ["https://api.pwnedpasswords.com/*"]`
+- **UI**: `WatchtowerPanel` 新增「暗网泄露扫描（HIBP）」卡片：扫描按钮 / 中止按钮 / 进度条 / 4 指标（已检查/命中/失败/耗时）/ 命中列表（点击直接打开编辑抽屉）
+
+### 阶段26：Options 新增「生成器」Tab ✅
+- `OptionsTab` 增 `'generator'`，Tabs 数组在「项目」与「标签」之间插入「生成器」
+- 新增 `GeneratorPanel`：密码生成器 / 用户名生成器双入口（复用 `PasswordGenerator` / `UsernameGenerator`），右侧附使用建议
+- 两个生成器组件新增 `hideInsert` 属性：独立入口时隐藏无意义的「插入」按钮，Item 编辑器内行为不变
+- 同步更新页头副标题（移除「M2 完整 CRUD 版本」表述）
+- **三验结果**: `tsc --noEmit` exit 0 → `vite build` exit 0（1678 modules，options chunk 49.28 kB，dist 内已含 pwnedpasswords）→ `vitest run` 4 文件 17 用例全通过
+
+### 阶段27：Passkey（B）可行性调研 ✅（结论：不做）
+- Chrome 扩展无法注册为系统级 Passkey Provider：`chrome.webAuthenticationProxy` 仅面向 ChromeOS 企业设备管理场景
+- 1Password 能实现是因为操作系统级集成，非扩展能力
+- 用户决策（VERBATIM）：`跳过，只做 C + 生成器（推荐）`
+
+---
+
+## 2026-10-28 生成器「免登录 + 前台上移」改造
+
+### 阶段28：公开生成器独立页面 + 多入口曝光 ✅
+- **新增页面三件套**（与保管库零耦合）：
+  | 文件 | 作用 |
+  |---|---|
+  | `src/generator/index.html` | 公开页入口，标题「公开密码生成器（免登录）」 |
+  | `src/generator/main.tsx` | 页面引导（不引入任何 Store / Screen） |
+  | `src/generator/App.tsx` | `PublicGeneratorApp`：密码 / 用户名双模式，支持 `compact` 紧凑版供 popup 复用 |
+- **访问入口（前台上移）**：
+  1. 独立页面 `chrome-extension://<扩展ID>/src/generator/index.html`（可直接收藏/固定标签页）
+  2. popup 未解锁/未初始化时顶部新增「保管库登录 / 免登录生成器」双 Tab，游客可原地生成
+  3. Options 未初始化/锁定页在注册/解锁卡片下方新增「免登录 · 公开密码生成器」入口卡
+  4. Options 页头常驻「公开生成器」按钮；「生成器」Tab 内标注「前台公开页（免登录）」链接 → 前台可用、后台可管
+- **多入口注册**：`vite.config.ts` rollupOptions.input 新增 `generator`；构建产物 `dist/src/generator/index.html` 仅预加载 generator / utils / 生成器组件 chunk，**不含 vault-store chunk**（Grep 校验：generator 相关 chunk 无 `VAULT_EXISTS` / `__1p_meta__` / `__1p_vault_cipher__`）
+- **兼容性测试** `test/vitest/10-public-generator.test.ts`（14 用例）：
+  - 静态隔离：`src/generator/*` 不含 useVaultStore / ipcCall / vaultStore / UnlockScreen / RegisterScreen / chrome.storage
+  - 部署入口：页面三件套存在 + vite 已注册 generator 入口
+  - 输出准确性：随机密码长度/字符集/500 次无重复、PIN 仅数字、易记密码词数与首字母大写、用户名三模式（随机/易记/自定义前后缀）
+- **三验结果**：`tsc --noEmit` exit 0 → `vite build` exit 0（1681 modules，含 generator 页面）→ `vitest run` 5 文件 **31/31 通过**
+
+---
+
+## 2026-10-28 生成器接入国密算法 + 自定义算法
+
+### 阶段29：国密（SM3/SM4）与自定义算法模式 ✅
+- **时间**：2026-10-28
+- **操作**：
+  1. 校验依赖 `sm-crypto@0.5.8`（MIT / integrity 通过 / npm 已安装）→ `package.json` 与 `package-lock.json` 改为精确版本 `0.5.8`
+  2. 新增 `src/types/sm-crypto.d.ts`：该库无自带类型，声明实际使用的 SM3 / SM4 接口
+  3. 新增 `src/shared/generators/gm.ts`：SM3-HMAC 字节流、SM4 分组密钥流（IV 由 SM3 派生）、拒绝采样字节→字符映射、模板派生
+  4. `src/shared/generators/password.ts` 扩展 `gm` / `custom` 两模式；`utils.ts` 的 `PWD_MODE_CFG` 增加长度区间
+  5. `src/components/PasswordGenerator.tsx` 模式 Tab 扩到 5 个，新增引擎切换、种子、盐值、迭代、字符集、模板、前后缀控件
+  6. 新增 `test/vitest/11-gm-generator.test.ts`（20 用例）
+- **关键实现**：
+  - 确定性：种子 + 盐值 + 计数器 + 参数一致 → 输出一致；「重新生成」仅递增计数器
+  - 随机等价：种子留空时取 128bit `crypto.getRandomValues`
+  - 均匀性：`byte < floor(256/n)*n` 才接受，避免取模偏置
+- **三验结果**：`tsc --noEmit` exit 0 → `vite build` exit 0 → `vitest run` 6 文件 **51/51 通过**（新增 20 用例）
+- **变更目录**：`.harness/changes/feature_gm_algorithm_20261028/summary.md`
+
+---
+
+## 2026-11-03 项目列表内一键复制
+
+### 阶段30：列表行快捷复制用户名 / 密码 ✅
+- **操作**：`src/screens/HomeScreen.tsx`
+  1. 新增模块级 `pickUsernameValue` / `pickPasswordValue`：purpose → 字段类型 → 标签正则三级定位
+  2. 组件内新增 `copiedKey` 状态与 `copyValue`：复制成功 Toast + 1.5s 对勾 + 20s 后清空剪贴板
+  3. 列表行右侧新增用户 / 钥匙两个复制按钮（回收站行不渲染，缺少字段也不渲染）
+- **三验结果**：`tsc --noEmit` exit 0 → `vite build` exit 0 → `vitest run` 6 文件 **51/51 通过**
+- **变更目录**：`.harness/changes/feature_list_quick_copy_20261103/summary.md`

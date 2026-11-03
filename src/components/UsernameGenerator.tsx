@@ -16,6 +16,8 @@ export interface UsernameGeneratorProps {
   onClose?: () => void;
   initialMode?: UsernameMode;
   className?: string;
+  /** 独立入口场景隐藏「插入」按钮（无宿主表单） */
+  hideInsert?: boolean;
 }
 
 const charTypeClass: Record<ColoredChar['type'], string> = {
@@ -33,6 +35,7 @@ export const UsernameGenerator: React.FC<UsernameGeneratorProps> = ({
   onClose,
   initialMode = 'random',
   className,
+  hideInsert = false,
 }) => {
   const [mode, setMode] = useState<UsernameMode>(initialMode);
   const cfg = USR_MODE_CFG[mode];
@@ -250,19 +253,21 @@ export const UsernameGenerator: React.FC<UsernameGeneratorProps> = ({
         >
           {copied ? <><Check size={14} className="inline mr-1" />已复制</> : '复制'}
         </button>
-        <button
-          type="button"
-          onClick={() => value && onChange(value)}
-          disabled={!value}
-          className={cn(
-            'px-4 py-2 rounded-xl text-sm font-semibold border transition',
-            !value
-              ? 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'
-              : 'bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-700 shadow shadow-emerald-500/20'
-          )}
-        >
-          插入
-        </button>
+        {!hideInsert && (
+          <button
+            type="button"
+            onClick={() => value && onChange(value)}
+            disabled={!value}
+            className={cn(
+              'px-4 py-2 rounded-xl text-sm font-semibold border transition',
+              !value
+                ? 'bg-slate-50 border-slate-200 text-slate-300 cursor-not-allowed'
+                : 'bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-700 shadow shadow-emerald-500/20'
+            )}
+          >
+            插入
+          </button>
+        )}
       </div>
     </div>
   );

@@ -11,7 +11,7 @@ import {
   Globe, CreditCard, UserCircle2, Building2, Car, Plane, Wifi, Ticket, Award,
   Server, Database, KeyRound, Puzzle, FileKey2, ShieldAlert, Stethoscope,
   ShoppingBag, Coins, Mailbox, FileText, FolderInput, BadgeIndianRupee, Sparkles,
-  RotateCcw, AlertTriangle, CheckCircle2, XCircle, Info,
+  RotateCcw, AlertTriangle, CheckCircle2, XCircle, Info, Check, UserRound,
 } from 'lucide-react';
 import { useVaultStore } from '@/store/vaultStore';
 import { cn } from '@/lib/utils';
@@ -67,6 +67,27 @@ export const CAT_ICON: Record<string, any> = CATEGORIES.reduce((acc, c) => {
   if (c.icon) acc[c.id as string] = c.icon;
   return acc;
 }, {} as Record<string, any>);
+
+/* ---------------- 列表快捷复制：从字段中定位用户名 / 密码 ---------------- */
+const pickUsernameValue = (it: Item): string => {
+  const byPurpose = it.fields.find((f) => f.purpose === 'primary_username' && f.value);
+  if (byPurpose) return byPurpose.value;
+  const byEmail = it.fields.find((f) => f.type === 'email' && f.value);
+  if (byEmail) return byEmail.value;
+  const byLabel = it.fields.find((f) =>
+    f.value && f.type !== 'password' && f.type !== 'concealed' && f.type !== 'otp' &&
+    /用户名|username|账号|account|邮箱|email|登录名/i.test(f.label));
+  return byLabel?.value ?? '';
+};
+
+const pickPasswordValue = (it: Item): string => {
+  const byPurpose = it.fields.find((f) => f.purpose === 'primary_password' && f.value);
+  if (byPurpose) return byPurpose.value;
+  const byType = it.fields.find((f) => f.type === 'password' && f.value);
+  if (byType) return byType.value;
+  const byLabel = it.fields.find((f) => f.value && f.type !== 'otp' && /密码|password|口令/i.test(f.label));
+  return byLabel?.value ?? '';
+};
 
 const useDebouncedValue = <T,>(value: T, delayMs = 300): T => {
   const [val, setVal] = useState<T>(value);
@@ -125,6 +146,30 @@ export const HomeScreen: React.FC<{
     const id = toastSeq.current++;
     setToasts((list) => [...list, { id, kind, title, detail }]);
     window.setTimeout(() => setToasts((list) => list.filter((t) => t.id !== id)), 3500);
+  };
+
+  /* -------- 列表内快捷复制（无需打开抽屉）-------- */
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copyValue = async (
+    e: React.MouseEvent, key: string, fieldLabel: string, value: string, itemTitle: string,
+  ) => {
+    e.stopPropagation();
+    if (!value) {
+      pushToast('warn', `「${itemTitle}」没有可复制的${fieldLabel}`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedKey(key);
+      window.setTimeout(() => setCopiedKey((cur) => (cur === key ? null : cur)), 1500);
+      pushToast('success', `已复制${fieldLabel}`, itemTitle);
+      // 与密码字段策略一致：20 秒后清空剪贴板
+      window.setTimeout(() => {
+        try { navigator.clipboard?.writeText('').catch(() => {}); } catch { /* ignore */ }
+      }, 20000);
+    } catch {
+      pushToast('error', '复制失败', '浏览器拒绝了剪贴板访问');
+    }
   };
 
   // ⭐ Fix: 之前 snap 或 meta 短暂 null 时会显示吓人的「状态异常…」，现在显示友好的加载中
@@ -306,6 +351,9 @@ export const HomeScreen: React.FC<{
               <ul className="divide-y divide-slate-100">
                 {list.map((it) => {
                   const I: any = CAT_ICON[it.category] ?? Globe;
+                  const usernameValue = pickUsernameValue(it);
+                  const passwordValue = pickPasswordValue(it);
+                  const itemTags = it.tags ?? [];
                   const doTrash = async (e: React.MouseEvent) => {
                     e.stopPropagation();
                     if (!window.confirm(`确定要将「${it.title}」移入回收站吗？30天后会自动永久删除。`)) return;
@@ -342,13 +390,56 @@ export const HomeScreen: React.FC<{
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5">
                             <p className={cn('text-[13px] font-semibold truncate', it.trashed ? 'text-slate-500 line-through decoration-slate-300' : 'text-slate-800')}>{it.title}</p>
-                            {it.favorite && !isTrash && <span className="text-amber-500"><Star size={12} fill="currentColor" /></span>}
+                            {it.favorite && !isTrash && <span className="text-amber-500 shrink-0"><Star size={12} fill="currentColor" /></span>}
+                            {itemTags.length > 0 && (
+                              <span className="flex items-center gap-1 shrink-0">
+                                {itemTags.slice(0, 2).map((t) => (
+                                  <span
+                                    key={t}
+                                    className={cn(
+                                      'px-1.5 rounded-full border text-[10px] leading-4 max-w-[80px] truncate',
+                                      it.trashed
+                                        ? 'bg-slate-100 text-slate-500 border-slate-200'
+                                        : 'bg-brand-50 text-brand-600 border-brand-100',
+                                    )}
+                                    title={t}
+                                  >{t}</span>
+                                ))}
+                                {itemTags.length > 2 && (
+                                  <span className="text-[10px] text-slate-400">+{itemTags.length - 2}</span>
+                                )}
+                              </span>
+                            )}
                           </div>
                           <p className="text-[11px] text-slate-500 truncate mt-0.5">{primarySubtitle(it)}</p>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
                           {!isTrash ? (
                             <>
+                              {usernameValue && (
+                                <button
+                                  onClick={(e) => copyValue(e, `${it.id}:user`, '用户名', usernameValue, it.title)}
+                                  className="p-1.5 rounded text-slate-400 hover:bg-brand-50 hover:text-brand-600 transition"
+                                  title="复制用户名"
+                                  aria-label="复制用户名"
+                                >
+                                  {copiedKey === `${it.id}:user`
+                                    ? <Check size={14} className="text-emerald-600" />
+                                    : <UserRound size={14} />}
+                                </button>
+                              )}
+                              {passwordValue && (
+                                <button
+                                  onClick={(e) => copyValue(e, `${it.id}:pwd`, '密码', passwordValue, it.title)}
+                                  className="p-1.5 rounded text-slate-400 hover:bg-brand-50 hover:text-brand-600 transition"
+                                  title="复制密码"
+                                  aria-label="复制密码"
+                                >
+                                  {copiedKey === `${it.id}:pwd`
+                                    ? <Check size={14} className="text-emerald-600" />
+                                    : <KeyRound size={14} />}
+                                </button>
+                              )}
                               <button
                                 onClick={(e) => { e.stopPropagation(); toggleFavorite(it.id); }}
                                 className={cn(

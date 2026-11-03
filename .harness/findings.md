@@ -252,3 +252,57 @@ code = ((mac[offset] & 0x7F)<<24 | mac[offset+1]<<16 | mac[offset+2]<<8 | mac[of
   3. 🟡 **任何涉及 chrome.storage.local 写入的函数（initializeEmptyVault / persistVault / updateItemSettings 等）100% 套 `try{ 写storage; 后续逻辑; }catch(e){ try{ chrome.storage.local.remove(刚写的所有key) } catch{}; throw e }` 事务回滚** → 保证"全有或全无"，绝不半提交死锁
   4. 🟢 **vaultExists 守卫拦截时，错误提示文本必须明确引导用户去"Options → 第4 Tab危险区 → 输入 YES-DELETE-ALL 清空"**，不要只说"去设置里清空"这种模糊文案，用户找不到
   5. 🔵 **零知识原则辅助**：已半提交的 storage 代码绝对不能自动删除（即不能在 catch 块里无脑 remove 成功过的 vault）→ 必须给用户手动确认选项（YES-DELETE-ALL 输入框），防止代码 bug 导致用户保管库被意外永久删除
+
+---
+
+## 2026-10-27 M3 收尾阶段技术发现
+
+### 5.1 【MV3 平台限制】Chrome 扩展无法成为系统级 Passkey Provider（结论：不做）
+- **发现时间**：2026-10-27
+- **调研结论**：
+  1. `chrome.webAuthenticationProxy` 仅面向 **ChromeOS 企业设备管理**（受管设备 + 企业策略），桌面 Chrome / Windows 不开放
+  2. Chrome 不支持第三方扩展注册为系统 Passkey 提供方（无 WebAuthn 扩展端 API）
+  3. 1Password 能提供 Passkey 是因为有 **操作系统级集成**（Windows Hello / macOS 原生 App），不是在扩展内实现
+- **决策**：用户确认跳过 B（Passkey），仅做 C（HIBP）+ 生成器
+
+### 5.2 【HIBP 接入设计】k-匿名协议 = 唯一可接受的零知识外查方式
+- **发现时间**：2026-10-27
+- **协议**：`SHA-1(密码)` → 只发前 5 位到 `api.pwnedpasswords.com/range/{prefix}` → 服务端返回该前缀下约 800 条后缀 → 本地比对剩余 35 位 → 命中得到泄露次数
+- **关键工程点**：
+  | 关注点 | 做法 |
+  |---|---|
+  | 隐私 | 完整密码/完整哈希永不出本机；请求带 `Add-Padding: true` 防响应大小流量分析 |
+  | 权限 | manifest 仅声明 `https://api.pwnedpasswords.com/*`，不做通配 |
+  | 性能 | 相同密码 `Set` 去重后只查一次；3 并发 worker（公共服务限流保护） |
+  | 容错 | 单请求 10s AbortController 超时；失败只累加 `failedPasswords`，不中断整批 |
+  | 可观测 | 日志只记录「密码数 / 命中数 / 失败数 / 耗时」，**绝不打印明文密码或完整哈希** |
+  | 交互 | 支持用户中途「中止」；命中结果按泄露次数降序，点击直接打开编辑抽屉 |
+
+### 5.3 【MV3 生命周期】SW 空闲约 30s 被回收 → 内存 DK 丢失是安全设计的必然结果（非 Bug）
+- **发现时间**：2026-10-27（自动填充阶段排障沉淀）
+- **说明**：`let __dk__` 只活在 Service Worker 闭包，Chrome 回收 SW 后 DK 必然消失；只有 `chrome.storage.local` 会持久化
+- **工程处理**：`requireUnlock` 必须抛带 code 的 `StoreError('LOCKED')`（而非普通 `Error`），UI 先弹 toast 再延迟 1.2s 跳转解锁页，避免抽屉卸载导致提示丢失
+
+---
+
+## 2026-10-28 国密算法接入阶段技术发现
+
+### 6.1 【算法选型】口令派生属对称问题：SM3 / SM4 适用，SM2 不适用
+- **发现时间**：2026-10-28
+- **结论**：
+  1. 口令生成要求「同一输入必得同一输出 + 输出空间均匀」，属于对称派生 → HMAC-SM3（摘要流）与 SM4（分组密钥流）天然契合
+  2. SM2 是非对称签名/加密算法，需椭圆曲线运算、产出为签名或密文，不能直接映射为口令字符；且每次签名引入随机数 k，天然不确定
+  3. 若业务后续需要 SM2，应定位为「SM2 签名认证 / SM2 加密传输」独立能力，不能塞进口令生成器
+
+### 6.2 【sm-crypto 使用坑】`sm4.encrypt` 默认 PKCS#7 会对整分组输入再补一整块
+- **发现时间**：2026-10-28
+- **现象**：输入恰好 16 字节时，`padding` 默认 `pkcs#7`，`paddingCount = BLOCK - len % BLOCK = 16`，输出变成 32 字节
+- **处理**：构造 SM4 密钥流时必须显式传 `{ padding: 'none', output: 'array' }`，并传字节数组（传字符串会按 UTF-8 解释）
+- **影响面**：任何直接用 sm4 做 CTR/密钥流的地方；后续若做 SM4 文件加密同样要注意
+
+### 6.3 【依赖治理】sm-crypto 无自带类型 + 版本必须精确锁定
+- **发现时间**：2026-10-28
+- **处理**：
+  1. `sm-crypto@0.5.8` 未提供 `.d.ts`，且 `allowJs: false`，需新增 `src/types/sm-crypto.d.ts` 声明实际使用的 `sm3` / `sm4` 接口
+  2. 按项目依赖规范，`package.json` 由 `^0.5.8` 改为精确 `0.5.8`，并同步 `package-lock.json` 根依赖声明，避免 `npm ci` 版本漂移
+  3. 该库为 CJS 发布，仅 `sm3` / `sm4` 被使用；`sm2` 依赖 `jsbn` 会被一并打进 bundle（构建产物增大），属可接受代价

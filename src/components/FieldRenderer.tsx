@@ -1,9 +1,10 @@
 import React, { useRef, useState, useEffect, useMemo } from 'react';
-import { Eye, EyeOff, Copy, Check, Dices, UserPlus, X, FileWarning, Calendar, Hash } from 'lucide-react';
+import { Eye, EyeOff, Copy, Check, Dices, UserPlus, X, FileWarning, Calendar, Hash, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Field } from '@/types/models';
 import { PasswordGenerator } from '@/components/PasswordGenerator';
 import { UsernameGenerator } from '@/components/UsernameGenerator';
+import { totpNow, parseOtpAuthUri, base32Decode } from '@/core/totp';
 
 export interface FieldRendererProps {
   field: Field;
@@ -11,6 +12,134 @@ export interface FieldRendererProps {
   readOnly?: boolean;
   className?: string;
 }
+
+/* TOTP 实时验证码字段（2FA 两步验证）：解析种子 → 每秒刷新 6/8 位码 + 倒计时环 */
+const TotpField: React.FC<{
+  secret: string;
+  readOnly: boolean;
+  onChange: (patch: Partial<Field>) => void;
+}> = ({ secret, readOnly, onChange }) => {
+  const [code, setCode] = useState('');
+  const [remaining, setRemaining] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const [showSeed, setShowSeed] = useState(false);
+
+  const { period, digits } = useMemo(() => {
+    const parsed = parseOtpAuthUri(secret);
+    return { period: parsed?.opts.period ?? 30, digits: parsed?.opts.digits ?? 6 };
+  }, [secret]);
+
+  const isValidSeed = useMemo(() => {
+    if (!secret) return false;
+    const parsed = parseOtpAuthUri(secret);
+    return base32Decode(parsed?.secret ?? secret).length > 0;
+  }, [secret]);
+
+  useEffect(() => {
+    if (!secret || !isValidSeed) { setCode(''); setRemaining(0); return; }
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const r = await totpNow(secret);
+        if (cancelled) return;
+        setCode(r.code);
+        setRemaining(r.remainingSec);
+      } catch {
+        if (!cancelled) setCode('');
+      }
+    };
+    refresh();
+    const t = window.setInterval(refresh, 1000);
+    return () => { cancelled = true; window.clearInterval(t); };
+  }, [secret, isValidSeed]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => {
+      try { navigator.clipboard?.writeText('').catch(() => {}); } catch { /* ignore */ }
+    }, 20000);
+    return () => clearTimeout(t);
+  }, [copied]);
+
+  const copyCode = async () => {
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* ignore */ }
+  };
+
+  const formatted = digits === 8 ? `${code.slice(0, 4)} ${code.slice(4)}` : `${code.slice(0, 3)} ${code.slice(3)}`;
+  const circumference = 2 * Math.PI * 14;
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 rounded-xl border-2 border-brand-100 bg-brand-50/40 px-3 py-2.5">
+        <div className="flex-1 min-w-0">
+          {!isValidSeed ? (
+            <span className="text-sm text-slate-400">输入 TOTP 种子（otpauth:// 或 Base32）</span>
+          ) : code ? (
+            <span className="font-mono text-2xl font-bold tracking-[0.12em] text-slate-900">{formatted}</span>
+          ) : (
+            <span className="text-sm text-slate-400">计算中…</span>
+          )}
+        </div>
+        {isValidSeed && (
+          <div className="relative w-9 h-9 shrink-0">
+            <svg viewBox="0 0 32 32" className="w-9 h-9 -rotate-90">
+              <circle cx="16" cy="16" r="14" fill="none" stroke="#e2e8f0" strokeWidth="3" />
+              <circle
+                cx="16" cy="16" r="14" fill="none" stroke="#0061ff" strokeWidth="3"
+                strokeLinecap="round"
+                strokeDasharray={`${(remaining / period) * circumference} ${circumference}`}
+              />
+            </svg>
+            <span className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-brand-700">{remaining}</span>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={copyCode}
+          disabled={!code}
+          className={cn(
+            'p-1.5 rounded-md transition shrink-0',
+            copied ? 'text-emerald-600 bg-emerald-50' : 'text-slate-400 hover:text-slate-600',
+            !code && 'opacity-40'
+          )}
+          title="复制验证码（20s 后清空剪贴板）"
+          aria-label="复制验证码"
+        >
+          {copied ? <Check size={16} /> : <Copy size={16} />}
+        </button>
+      </div>
+
+      {!readOnly && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setShowSeed((s) => !s)}
+            className="text-xs font-medium text-slate-500 hover:text-brand-600 flex items-center gap-0.5"
+          >
+            <ChevronDown size={14} className={cn('transition-transform', showSeed && 'rotate-180')} />
+            {showSeed ? '收起种子' : '编辑种子'}
+          </button>
+          {showSeed && (
+            <input
+              type="text"
+              value={secret}
+              onChange={(e) => onChange({ value: e.target.value })}
+              placeholder="otpauth://totp/... 或 Base32 种子"
+              className="mt-1 w-full px-3 py-2 rounded-xl border-2 border-slate-200 bg-white text-slate-900 placeholder-slate-400 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-brand-300 focus:border-brand-300"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const FieldRenderer: React.FC<FieldRendererProps> = ({ field, onChange, readOnly = false, className }) => {
   const [showSecret, setShowSecret] = useState(false);
@@ -294,43 +423,11 @@ export const FieldRenderer: React.FC<FieldRendererProps> = ({ field, onChange, r
 
       case 'otp':
         return (
-          <div className="relative">
-            <input
-              type={showSecret ? 'text' : 'password'}
-              disabled={readOnly}
-              value={field.value}
-              onChange={(e) => onChange({ value: e.target.value })}
-              placeholder="otpauth://totp/... 或 TOTP 种子密钥"
-              className={cn(inputBaseCls, 'pr-24 font-mono tracking-wider')}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand-50 text-brand-600 mr-1 font-semibold">TOTP M3</span>
-              <button
-                type="button"
-                onClick={() => setShowSecret((s) => !s)}
-                disabled={readOnly}
-                className="p-1.5 rounded-md text-slate-400 hover:text-slate-600 disabled:opacity-50"
-                title={showSecret ? '隐藏' : '显示种子'}
-              >
-                {showSecret ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-              {field.value && (
-                <button
-                  type="button"
-                  onClick={copyValue}
-                  className={cn(
-                    'p-1.5 rounded-md transition',
-                    copied ? 'text-emerald-600 bg-emerald-50' : 'text-slate-400 hover:text-slate-600'
-                  )}
-                  title="复制种子密钥"
-                >
-                  {copied ? <Check size={15} /> : <Copy size={15} />}
-                </button>
-              )}
-            </div>
-          </div>
+          <TotpField
+            secret={field.value}
+            readOnly={readOnly}
+            onChange={onChange}
+          />
         );
 
       case 'file':

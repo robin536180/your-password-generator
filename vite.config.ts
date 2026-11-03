@@ -57,6 +57,7 @@ export default defineConfig({
       input: {
         popup: resolve(__dirname, 'src/popup/index.html'),
         options: resolve(__dirname, 'src/options/index.html'),
+        generator: resolve(__dirname, 'src/generator/index.html'),
       },
     },
   },

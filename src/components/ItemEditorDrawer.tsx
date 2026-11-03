@@ -206,6 +206,13 @@ type TagEditorProps = {
 };
 const TagEditor: React.FC<TagEditorProps> = ({ tags, onChange }) => {
   const [draft, setDraft] = useState('');
+  /** 提交输入框中的草稿（Enter 或失焦时调用），避免「输入了但没按 Enter」导致标签丢失 */
+  const commitDraft = () => {
+    const v = draft.trim();
+    if (!v) return;
+    if (!tags.includes(v)) onChange([...tags, v]);
+    setDraft('');
+  };
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-1.5 text-[12px] text-slate-500">
@@ -221,12 +228,13 @@ const TagEditor: React.FC<TagEditorProps> = ({ tags, onChange }) => {
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitDraft}
           onKeyDown={(e) => {
+            // 中文输入法组合期间不提交，避免把半成品拼音当成标签
+            if (e.nativeEvent.isComposing) return;
             if (e.key === 'Enter' && draft.trim()) {
               e.preventDefault();
-              const v = draft.trim();
-              if (!tags.includes(v)) onChange([...tags, v]);
-              setDraft('');
+              commitDraft();
             } else if (e.key === 'Backspace' && !draft && tags.length) {
               onChange(tags.slice(0, -1));
             }

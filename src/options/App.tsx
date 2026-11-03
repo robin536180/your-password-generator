@@ -9,9 +9,11 @@ import {
   Shield, Layers, Tag, Eye, Settings2, Database,
   KeyRound, ShieldCheck, ShieldAlert, Unlink, Globe2, CalendarClock,
   ChevronRight, Search, FolderOpen, Download, Upload, FileKey2, AlertTriangle,
-  Edit3,
+  Edit3, Wand2, Bug, Loader2, X, UserRound, ShieldX,
 } from 'lucide-react';
 import { ItemEditorDrawer } from '@/components/ItemEditorDrawer';
+import { PasswordGenerator } from '@/components/PasswordGenerator';
+import { UsernameGenerator } from '@/components/UsernameGenerator';
 import { useVaultStore } from '@/store/vaultStore';
 import { RegisterScreen } from '@/screens/RegisterScreen';
 import { UnlockScreen } from '@/screens/UnlockScreen';
@@ -19,11 +21,16 @@ import { HomeScreen } from '@/screens/HomeScreen';
 import { Log, type LogEntry } from '@/core/logger';
 import { scanWatchtower } from '@/core/watchtower';
 import type { WatchtowerIssueKey, WatchtowerReport } from '@/core/watchtower';
+import { scanBreachedPasswords } from '@/core/hibp';
+import type { BreachedScanResult } from '@/core/hibp';
 import { cn } from '@/lib/utils';
 import { CATEGORY_LABELS, CAT_ICON } from '@/screens/HomeScreen';
 import type { Item } from '@/types/models';
 
-export type OptionsTab = 'home' | 'items' | 'tags' | 'watchtower' | 'settings';
+export type OptionsTab = 'home' | 'items' | 'generator' | 'tags' | 'watchtower' | 'settings';
+
+/** 公开生成器页面（免登录，独立 Tab 打开） */
+const PUBLIC_GENERATOR_URL = '../generator/index.html';
 
 export const OptionsApp: React.FC = () => {
   const status = useVaultStore((s) => s.status);
@@ -53,6 +60,7 @@ export const OptionsApp: React.FC = () => {
   const Tabs: { key: OptionsTab; label: string; Icon: any; badge?: string }[] = [
     { key: 'home', label: '首页', Icon: Shield },
     { key: 'items', label: '项目', Icon: Layers, badge: totalItems > 0 ? `${totalItems}` : undefined },
+    { key: 'generator', label: '生成器', Icon: Wand2 },
     { key: 'tags', label: '标签', Icon: Tag },
     {
       key: 'watchtower',
@@ -68,19 +76,21 @@ export const OptionsApp: React.FC = () => {
 
   if (status === 'UNINITIALIZED') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-8">
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-slate-100 p-8">
         <div className="w-full max-w-md shadow-2xl rounded-3xl overflow-hidden bg-white border border-slate-200">
           <RegisterScreen onDone={() => refresh()} />
         </div>
+        <GuestGeneratorEntry />
       </div>
     );
   }
   if (status === 'LOCKED') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100 p-8">
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-slate-100 p-8">
         <div className="w-full max-w-md shadow-2xl rounded-3xl overflow-hidden bg-white border border-slate-200">
           <UnlockScreen onGoRegister={() => {}} />
         </div>
+        <GuestGeneratorEntry />
       </div>
     );
   }
@@ -92,9 +102,17 @@ export const OptionsApp: React.FC = () => {
           <div className="p-2.5 rounded-xl bg-white/20"><KeyRound size={24} /></div>
           <div>
             <h1 className="text-xl font-bold flex items-center gap-2">1Pass Clone · 管理中心</h1>
-            <p className="text-xs opacity-90">M2 完整 CRUD 版本 · AES-256-GCM · 零知识本地加密 · PBKDF2 65 万次</p>
+            <p className="text-xs opacity-90">AES-256-GCM · 零知识本地加密 · PBKDF2 65 万次 · 独立密码/用户名生成器</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <a
+              href={PUBLIC_GENERATOR_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="px-3 py-1 rounded-full bg-white/15 hover:bg-white/25 text-xs font-semibold flex items-center gap-1 transition"
+            >
+              <Wand2 size={12}/> 公开生成器
+            </a>
             <div className="px-3 py-1 rounded-full bg-emerald-500/90 text-xs font-semibold flex items-center gap-1">
               <ShieldCheck size={12}/> 已解锁
             </div>
@@ -201,6 +219,10 @@ export const OptionsApp: React.FC = () => {
           </div>
         )}
 
+        {tab === 'generator' && (
+          <GeneratorPanel />
+        )}
+
         {tab === 'tags' && (
           <TagsPanel reportRef={watchtowerReport} />
         )}
@@ -251,6 +273,77 @@ const RiskMiniCard: React.FC<{ keyName: WatchtowerIssueKey; label: string; count
       <div className="flex-1 min-w-0">
         <p className={cn('text-[11px] font-semibold', textC)}>{label}</p>
         <p className="text-xl font-bold text-slate-800 mt-0.5 leading-tight">{count}</p>
+      </div>
+    </div>
+  );
+};
+
+/* ============== GuestGeneratorEntry ============== */
+/** 未登录 / 未初始化状态下的公开生成器入口（与保管库完全解耦） */
+const GuestGeneratorEntry: React.FC = () => (
+  <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-sm p-4 flex items-center gap-3">
+    <div className="p-2 rounded-xl bg-brand-50 text-brand-600 shrink-0"><Wand2 size={18}/></div>
+    <div className="min-w-0 flex-1">
+      <p className="text-[12.5px] font-semibold text-slate-700">免登录 · 公开密码生成器</p>
+      <p className="text-[11px] text-slate-500 mt-0.5">无需注册或解锁，直接在本机生成密码与用户名。</p>
+    </div>
+    <a
+      href={PUBLIC_GENERATOR_URL}
+      target="_blank"
+      rel="noreferrer"
+      className="shrink-0 px-3 py-1.5 rounded-lg bg-brand-500 text-white text-[12px] font-semibold hover:bg-brand-600 transition"
+    >立即使用</a>
+  </div>
+);
+
+/* ============== GeneratorPanel ============== */
+const GeneratorPanel: React.FC = () => {
+  const [kind, setKind] = useState<'password' | 'username'>('password');
+  const [pwd, setPwd] = useState('');
+  const [usr, setUsr] = useState('');
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit">
+          <button onClick={() => setKind('password')} className={cn(
+            'px-3 py-1.5 rounded-lg text-[12px] font-semibold transition flex items-center gap-1.5',
+            kind === 'password' ? 'bg-white text-brand-700 shadow' : 'text-slate-600 hover:text-slate-800',
+          )}><KeyRound size={13}/> 密码生成器</button>
+          <button onClick={() => setKind('username')} className={cn(
+            'px-3 py-1.5 rounded-lg text-[12px] font-semibold transition flex items-center gap-1.5',
+            kind === 'username' ? 'bg-white text-brand-700 shadow' : 'text-slate-600 hover:text-slate-800',
+          )}><UserRound size={13}/> 用户名生成器</button>
+        </div>
+        <p className="text-[11.5px] text-slate-500">全部在本机生成（crypto.getRandomValues），不联网、不上传。</p>
+        <a
+          href={PUBLIC_GENERATOR_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="ml-auto text-[11.5px] font-semibold text-brand-600 hover:text-brand-700 flex items-center gap-1"
+        >前台公开页（免登录） <ChevronRight size={13}/></a>
+      </div>
+
+      <div className="grid lg:grid-cols-[minmax(0,540px),1fr] gap-5 items-start">
+        <div>
+          {kind === 'password'
+            ? <PasswordGenerator value={pwd} onChange={setPwd} hideInsert />
+            : <UsernameGenerator value={usr} onChange={setUsr} hideInsert />}
+        </div>
+
+        <section className="rounded-2xl border border-slate-200 bg-white shadow-sm p-5">
+          <h3 className="font-bold text-slate-700 flex items-center gap-2"><Wand2 size={16} className="text-brand-600" /> 使用建议</h3>
+          <div className="mt-3 space-y-2.5 text-[12px] text-slate-600">
+            <p>· <b>随机密码</b>：长度 ≥ 20 且勾选数字与符号，熵值可超过 100 bit，适合高价值账户。</p>
+            <p>· <b>易记密码</b>：多词组合（4 词以上），便于手输，兼顾强度与记忆成本。</p>
+            <p>· <b>PIN</b>：仅用于银行卡 / 设备解锁等只需数字的场景，切勿用于网站登录。</p>
+            <p>· <b>用户名</b>：随机模式可避免跨站点同名关联；易记模式适合需要口头沟通的账号。</p>
+            <p>· 复制后请尽快粘贴保存，避免剪贴板被其他程序读取。</p>
+          </div>
+          <div className="mt-4 rounded-xl bg-slate-50 border border-slate-100 p-3 text-[11px] text-slate-500">
+            提示：生成的密码不会自动写入保管库，需要保存时请到「项目」中新建或编辑登录项。
+          </div>
+        </section>
       </div>
     </div>
   );
@@ -324,6 +417,13 @@ const TagsPanel: React.FC<{ reportRef: WatchtowerReport }> = () => {
                     {it.favorite && <span className="text-amber-500"><Eye size={11} strokeWidth={3}/></span>}
                   </p>
                   <p className="text-[11px] text-slate-500 truncate mt-0.5">{sub}</p>
+                  {(it.tags ?? []).length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1 mt-1">
+                      {(it.tags ?? []).map((t) => (
+                        <span key={t} className="px-1.5 rounded-full bg-brand-50 text-brand-600 border border-brand-100 text-[10px] leading-4 max-w-[120px] truncate">{t}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <span className="text-[10.5px] text-slate-400 shrink-0">{CATEGORY_LABELS[it.category]}</span>
                 <ChevronRight size={14} className="text-slate-300 shrink-0"/>
@@ -342,6 +442,11 @@ const WatchtowerPanel: React.FC<{ report: WatchtowerReport }> = ({ report }) => 
   const [filter, setFilter] = useState<WatchtowerIssueKey | 'all'>('all');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerInitItem, setDrawerInitItem] = useState<Item | undefined>(undefined);
+  const [hibpResult, setHibpResult] = useState<BreachedScanResult | null>(null);
+  const [hibpScanning, setHibpScanning] = useState(false);
+  const [hibpProgress, setHibpProgress] = useState({ done: 0, total: 0 });
+  const [hibpError, setHibpError] = useState<string | null>(null);
+  const hibpAbortRef = useRef<AbortController | null>(null);
   const items: Item[] = snap?.items ?? [];
   const itemMap = new Map(items.map((i) => [i.id, i] as const));
   const tabs: { key: WatchtowerIssueKey | 'all'; label: string; Icon: any; count: number; color: 'rose'|'amber'|'orange'|'violet'|'slate' }[] = [
@@ -363,6 +468,27 @@ const WatchtowerPanel: React.FC<{ report: WatchtowerReport }> = ({ report }) => 
     if (k === 'reused')   return { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', label: '复用密码', dot: 'bg-amber-500' };
     if (k === 'notHttps') return { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', label: '未加密 HTTP', dot: 'bg-orange-500' };
     return { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-200', label: '陈旧密码', dot: 'bg-violet-500' };
+  };
+  const runHibpScan = async () => {
+    if (hibpScanning) return;
+    const ctrl = new AbortController();
+    hibpAbortRef.current = ctrl;
+    setHibpScanning(true);
+    setHibpError(null);
+    setHibpResult(null);
+    setHibpProgress({ done: 0, total: 0 });
+    try {
+      const r = await scanBreachedPasswords(items, {
+        signal: ctrl.signal,
+        onProgress: (done, total) => setHibpProgress({ done, total }),
+      });
+      setHibpResult(r);
+    } catch (e) {
+      setHibpError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHibpScanning(false);
+      hibpAbortRef.current = null;
+    }
   };
   return (
     <div className="space-y-5">
@@ -436,6 +562,134 @@ const WatchtowerPanel: React.FC<{ report: WatchtowerReport }> = ({ report }) => 
               </div>
             );
           })}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-slate-100 flex flex-wrap items-center gap-3">
+          <h3 className="font-bold text-slate-700 flex items-center gap-2"><Bug size={16} className="text-rose-600"/> 暗网泄露扫描（HIBP）</h3>
+          <span className="text-[11px] text-slate-400">k-匿名：仅上传 SHA-1 前 5 位，完整密码与哈希不出本机</span>
+          <div className="ml-auto flex items-center gap-2">
+            {hibpScanning && (
+              <button
+                onClick={() => hibpAbortRef.current?.abort()}
+                className="px-3 py-1.5 rounded-lg text-[12px] font-semibold border border-slate-200 text-slate-600 hover:bg-slate-50 transition flex items-center gap-1"
+              ><X size={12}/> 中止</button>
+            )}
+            <button
+              onClick={runHibpScan}
+              disabled={hibpScanning || items.filter((i) => !i.trashed).length === 0}
+              className={cn(
+                'px-4 py-1.5 rounded-lg text-[12px] font-semibold transition flex items-center gap-1.5',
+                hibpScanning || items.filter((i) => !i.trashed).length === 0
+                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                  : 'bg-brand-500 text-white hover:bg-brand-600 shadow-sm',
+              )}
+            >
+              {hibpScanning
+                ? <><Loader2 size={13} className="animate-spin"/> 扫描中 {hibpProgress.done}/{hibpProgress.total || '—'}</>
+                : <><Bug size={13}/> {hibpResult ? '重新扫描' : '扫描泄露密码'}</>}
+            </button>
+          </div>
+        </div>
+
+        <div className="p-5">
+          {hibpScanning && (
+            <div className="space-y-2">
+              <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                <div
+                  className="h-full bg-brand-500 transition-all"
+                  style={{ width: `${hibpProgress.total ? Math.round((hibpProgress.done / hibpProgress.total) * 100) : 0}%` }}
+                />
+              </div>
+              <p className="text-[11.5px] text-slate-500">
+                正在比对 {hibpProgress.done} / {hibpProgress.total || '—'} 个唯一密码（并发 3，单请求超时 10s）…
+              </p>
+            </div>
+          )}
+
+          {!hibpScanning && hibpError && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-[12px] text-rose-700 flex items-start gap-2">
+              <ShieldX size={15} className="mt-0.5 shrink-0"/>
+              <div>
+                <p className="font-semibold">扫描失败</p>
+                <p className="text-[11.5px] mt-0.5 break-all">{hibpError}</p>
+              </div>
+            </div>
+          )}
+
+          {!hibpScanning && !hibpError && !hibpResult && (
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-xl bg-rose-50 text-rose-600"><Bug size={18}/></div>
+              <div className="text-[12px] text-slate-600 space-y-1">
+                <p className="font-semibold text-slate-700">检查保管库中的密码是否出现在已知数据泄露库中</p>
+                <p>· 数据源：Have I Been Pwned（api.pwnedpasswords.com），覆盖数百亿条泄露记录。</p>
+                <p>· 隐私：采用 k-匿名协议，服务端无法得知你的密码或完整哈希。</p>
+                <p>· 相同密码只查询一次；单个请求失败会被跳过，不影响其余结果。</p>
+              </div>
+            </div>
+          )}
+
+          {!hibpScanning && !hibpError && hibpResult && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
+                  <p className="text-[10.5px] text-slate-500 font-semibold">已检查密码</p>
+                  <p className="text-xl font-bold text-slate-800">{hibpResult.checkedPasswords}</p>
+                </div>
+                <div className="rounded-xl bg-rose-50 border border-rose-100 p-3">
+                  <p className="text-[10.5px] text-rose-600 font-semibold">泄露命中</p>
+                  <p className="text-xl font-bold text-rose-700">{hibpResult.hits.length}</p>
+                </div>
+                <div className="rounded-xl bg-amber-50 border border-amber-100 p-3">
+                  <p className="text-[10.5px] text-amber-700 font-semibold">查询失败</p>
+                  <p className="text-xl font-bold text-amber-700">{hibpResult.failedPasswords}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 border border-slate-100 p-3">
+                  <p className="text-[10.5px] text-slate-500 font-semibold">耗时</p>
+                  <p className="text-xl font-bold text-slate-800">{hibpResult.durationMs}<span className="text-[11px] font-normal ml-0.5">ms</span></p>
+                </div>
+              </div>
+
+              {hibpResult.hits.length === 0 ? (
+                <div className="py-6 text-center text-slate-400 text-[12px]">
+                  <ShieldCheck size={30} className="mx-auto mb-1.5 text-emerald-500 opacity-70"/>
+                  <p className="font-semibold text-slate-500">✅ 未发现泄露密码</p>
+                  <p className="mt-0.5 text-slate-400">共检查 {hibpResult.scannedItems} 个项目中的 {hibpResult.checkedPasswords} 个唯一密码。</p>
+                </div>
+              ) : (
+                <div>
+                  <p className="text-[11.5px] font-semibold text-slate-600 mb-1.5">命中列表（按泄露次数降序）</p>
+                  <div className="rounded-xl border border-slate-200 divide-y divide-slate-100 max-h-[320px] overflow-auto">
+                    {hibpResult.hits.map((h) => {
+                      const it = itemMap.get(h.itemId);
+                      const I: any = it ? (CAT_ICON[it.category] ?? FolderOpen) : FolderOpen;
+                      return (
+                        <div
+                          key={`${h.itemId}-${h.fieldId}`}
+                          onClick={() => { if (it) { setDrawerInitItem(it); setDrawerOpen(true); } }}
+                          className="px-4 py-2.5 flex items-center gap-3 hover:bg-slate-50 cursor-pointer group"
+                        >
+                          <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center shrink-0">
+                            <I size={14}/>
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[12.5px] font-semibold text-slate-800 truncate">{h.itemTitle}</p>
+                            <p className="text-[11px] text-slate-500 truncate mt-0.5">字段：{h.fieldLabel}</p>
+                          </div>
+                          <span className="shrink-0 text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-100 rounded-full px-2 py-0.5">
+                            泄露 {h.count.toLocaleString()} 次
+                          </span>
+                          <ChevronRight size={14} className="text-slate-300 shrink-0"/>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-2">建议立即为命中的账户更换唯一强密码；点击条目可直接编辑。</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

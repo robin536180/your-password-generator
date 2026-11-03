@@ -13,7 +13,9 @@ export type PasswordModeCfg = { min: number; max: number; default: number };
 export const PWD_MODE_CFG: Record<string, PasswordModeCfg> = {
   random: { min: 8, max: 100, default: 20 },
   memorable: { min: 3, max: 15, default: 4 },
-  pin: { min: 3, max: 12, default: 6 }
+  pin: { min: 3, max: 12, default: 6 },
+  gm: { min: 8, max: 64, default: 20 },
+  custom: { min: 4, max: 64, default: 16 }
 } as const;
 
 export const USR_MODE_CFG: Record<string, PasswordModeCfg> = {

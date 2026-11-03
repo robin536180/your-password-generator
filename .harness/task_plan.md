@@ -132,3 +132,98 @@
   | M2-4 | Watchtower MVP（纯本地） | 复用 background 的 Watchtower 路由：(1) 熵<60bit 弱密码；(2) FNV1a 重复密码；(3) http:// 非加密 URL；(4) 密码 >365 天未改；4 色风险卡 + 受影响 Item 列表 |
   | M2-5 | Options 首页：保管库一键 JSON 导入/导出备份 | 导出 AES-256-GCM 加密 JSON（DK 加密，防止明文泄露）；导入支持同名 Item 去重（按 itemId 合并） |
 
+---
+
+### 任务6：M3 收尾 — TOTP 接入 UI + HIBP 泄露检测 + 生成器独立入口
+- **目标**: 在自动填充功能整体移除（用户决策）后，完成 M3 剩余可交付项：TOTP 验证码接入字段 UI、Watchtower 接入 HIBP k-匿名泄露检测、恢复密码/用户名生成器独立入口
+- **状态**: ✅ 完成（代码 + 三验通过，待用户真机验收）
+- **用户决策记录（VERBATIM）**:
+  - `我不要自动填充的功能，你还是别监听了，这个功能影响面太广了。` → 自动填充整体移除（commit e2352d2）
+  - `B、C、然后还有之前的密码生成器别忘了加回来` + `跳过，只做 C + 生成器（推荐）` → Passkey（B）跳过，仅做 HIBP（C）+ 生成器
+- **交付清单**:
+  | 编号 | 子任务 | 交付文件 | 状态 |
+  |---|---|---|---|
+  | TOTP-1 | RFC 6238 纯算法模块 | `src/core/totp.ts`（commit dbbdac7） | ✅ |
+  | TOTP-2 | 字段 UI：实时 6/8 位码 + SVG 倒计时环 + 复制 + 可折叠种子 | `src/components/FieldRenderer.tsx`（`TotpField`） | ✅ 真机验证通过 |
+  | HIBP-1 | k-匿名泄露检测（SHA-1 前 5 位 + 3 并发 + 10s 超时 + 去重） | `src/core/hibp.ts`（新增） | ✅ |
+  | HIBP-2 | 最小权限 | `src/manifest.json` → `host_permissions: https://api.pwnedpasswords.com/*` | ✅ |
+  | HIBP-3 | 瞭望塔「暗网泄露扫描」卡片：进度条 / 中止 / 命中列表降序 / 点击编辑 | `src/options/App.tsx`（WatchtowerPanel） | ✅ |
+  | GEN-1 | Options 新增「生成器」Tab（密码 / 用户名双入口） | `src/options/App.tsx`（GeneratorPanel）+ 两个生成器新增 `hideInsert` 属性 | ✅ |
+- **Passkey（B）调研结论**: Chrome 扩展无法成为系统级 Passkey Provider（`chrome.webAuthenticationProxy` 仅 ChromeOS 企业环境），用户确认跳过，详见 findings.md
+
+---
+
+### 任务7：生成器「免登录 + 前台上移」改造
+- **目标**: 生成器不再局限于管理中心内部；游客无需登录即可使用全部核心功能（密码三模式 + 用户名三模式），同时管理中心保留生成器配置入口
+- **状态**: ✅ 完成（三验通过，待用户真机验收）
+- **架构**: 前台可用（独立公开页 + popup 双 Tab + 未登录页入口卡） / 后台可管（管理中心「生成器」Tab + 页头「公开生成器」入口）
+- **交付清单**:
+  | 文件 | 变更 | 说明 |
+  |---|---|---|
+  | `src/generator/index.html` | 新增 | 公开页 HTML 入口 |
+  | `src/generator/main.tsx` | 新增 | 页面引导（零 Store / Screen 依赖） |
+  | `src/generator/App.tsx` | 新增 | `PublicGeneratorApp`（含 `compact` 紧凑模式） |
+  | `src/popup/App.tsx` | 修改 | 未解锁时顶部「保管库登录 / 免登录生成器」双 Tab |
+  | `src/options/App.tsx` | 修改 | 未初始化/锁定态新增 `GuestGeneratorEntry`；页头「公开生成器」；生成器 Tab 增加前台公开页链接 |
+  | `vite.config.ts` | 修改 | rollupOptions.input 注册 `src/generator/index.html` |
+  | `test/vitest/10-public-generator.test.ts` | 新增 | 14 用例：静态隔离 + 部署入口 + 六种生成模式输出准确性 |
+- **验收标准**:
+  - [x] 未登录状态可直接使用生成器（不经过注册/解锁）
+  - [x] 生成器页面零保管库依赖（构建产物不含 vault-store chunk）
+  - [x] 六种模式输出准确性 100%（长度/字符集/唯一性/词数/前后缀）
+  - [x] 管理中心保留生成器 Tab 与公开页入口
+  - [x] typecheck / build / vitest 三验全绿（31/31）
+
+---
+
+### 任务8：密码生成器接入国密算法 + 自定义算法
+- **目标**: 密码生成器新增「国密」与「自定义」两种模式；国密使用 SM3 / SM4 做确定性派生，自定义算法支持引擎、迭代、字符集、模板、前后缀全配置
+- **状态**: ✅ 完成（typecheck / build / vitest 三验通过，待用户真机验收）
+- **创建时间**: 2026-10-28
+- **变更目录**: `.harness/changes/feature_gm_algorithm_20261028/summary.md`
+- **关键决策**:
+  | 项 | 决策 |
+  |---|---|
+  | 算法选型 | 口令派生属对称问题 → SM3（HMAC-SM3 摘要）/ SM4（分组密钥流）；SM2 为非对称算法，不纳入 |
+  | 派生模型 | 种子 + 盐值 + 计数器 + 参数 → 确定性输出；种子留空取 128bit 系统随机数 |
+  | 均匀性 | 字节→字符使用拒绝采样，避免取模偏置；字符集 > 256 走双字节索引 |
+  | 自定义能力 | 引擎 / 迭代次数（1-1000）/ 字符集 / 模板（`*` `#` `?`）/ 前缀 / 后缀 |
+  | 依赖 | `sm-crypto@0.5.8`（MIT，精确版本锁定，integrity 校验通过） |
+- **交付清单**:
+  | 文件 | 变更 | 说明 |
+  |---|---|---|
+  | `src/shared/generators/gm.ts` | 新增 | 国密派生核心（SM3-HMAC 流 / SM4 密钥流 / 拒绝采样 / 模板派生） |
+  | `src/types/sm-crypto.d.ts` | 新增 | sm-crypto 最小类型声明 |
+  | `src/shared/generators/password.ts` | 修改 | 新增 `gm` / `custom` 模式与选项类型 |
+  | `src/shared/generators/utils.ts` | 修改 | `PWD_MODE_CFG` 增加 gm / custom |
+  | `src/components/PasswordGenerator.tsx` | 修改 | 5 个模式 Tab + 国密 / 自定义参数面板 |
+  | `src/generator/App.tsx` | 修改 | 公开生成器文案补充新模式 |
+  | `test/vitest/11-gm-generator.test.ts` | 新增 | 20 用例（标准向量 / 确定性 / 字符集 / 模板 / 边界） |
+- **验收标准**:
+  - [x] SM3 / SM4 标准向量与国标一致
+  - [x] 相同种子 + 盐值 + 计数器输出一致，计数器 / 盐值变化输出不同
+  - [x] 长度与字符集约束准确（SM3、SM4 双引擎）
+  - [x] 种子留空时 50 次生成无重复
+  - [x] 自定义算法：字符集、模板占位符、前后缀、迭代次数均生效
+  - [x] typecheck / build / vitest 三验全绿（51/51）
+
+---
+
+### 任务9：项目列表内一键复制用户名 / 密码
+- **目标**: 列表行无需打开编辑抽屉即可复制用户名与密码
+- **状态**: ✅ 完成（三验通过，待用户真机验收）
+- **创建时间**: 2026-11-03
+- **变更目录**: `.harness/changes/feature_list_quick_copy_20261103/summary.md`
+- **实现要点**:
+  | 项 | 说明 |
+  |---|---|
+  | 字段定位 | purpose → 字段类型（email / password）→ 中英文标签正则，三级兜底 |
+  | 误判规避 | 用户名排除 password / concealed / otp；密码排除 otp，避免复制 `otpauth://` |
+  | 交互 | 行右侧用户 / 钥匙图标，复制后 Toast + 1.5s 对勾 |
+  | 安全 | 复制 20 秒后清空剪贴板；回收站项目不显示按钮 |
+- **验收标准**:
+  - [x] 列表内可直接复制用户名与密码，不打开抽屉
+  - [x] 缺少对应字段时不渲染按钮
+  - [x] typecheck / build / vitest 三验全绿（51/51）
+
+
