@@ -350,3 +350,38 @@
   3. 列表行右侧新增用户 / 钥匙两个复制按钮（回收站行不渲染，缺少字段也不渲染）
 - **三验结果**：`tsc --noEmit` exit 0 → `vite build` exit 0 → `vitest run` 6 文件 **51/51 通过**
 - **变更目录**：`.harness/changes/feature_list_quick_copy_20261103/summary.md`
+
+---
+
+## 2026-11-04 打包发布流程梳理 + 清理外层 v1.1 老代码
+
+### 阶段31：清理 v1.1 遗留老代码 + 修复打包脚本 ✅
+- **删除的外层老代码（6 个，均不再被 v2.0 构建引用）**：
+  | 文件 | 说明 |
+  |---|---|
+  | `manifest.json`（根目录） | v1.1 版，`default_popup: popup.html`，与 `src/manifest.json`（v2.0）冲突 |
+  | `popup.html` / `popup.css` / `popup.js` | v1.1 原生 JS 三件套 |
+  | `words.js` | v1.1 词典（已被 `src/shared/generators/words.ts` 替代） |
+  | `test/generator.test.js` | v1.1 旧测试（vitest 只跑 `test/**/*.test.ts(x)`，该 .js 不在范围内） |
+- **清理过时文案**：`src/options/App.tsx` 安全参数卡移除「v1.1 popup.js/css/html 根目录三件套 0 行修改」说明
+- **修复打包脚本（关键问题）**：原 `pack` 脚本 `cd dist && bestzip ../release/$npm_package_name-v$npm_package_version.zip .` 在 Windows（cmd.exe）下 `$npm_package_name` 不展开，会产出字面量文件名 `$npm_package_name-v$npm_package_version.zip`
+  - 改为 `node scripts/pack.mjs`：读取 `package.json` 动态拼 zip 名，跨平台；打包前 `rmSync(dist/.vite)` 排除 vite 构建元数据
+  - 验证产物 `release/1password-clone-v2.0.0-m1.zip`：23 条目、根目录含 `manifest.json`、不含 `.vite`
+- **README**：补齐开发/构建/打包/发布（Chrome Web Store）说明
+- **三验结果**：`tsc --noEmit` exit 0 → `vitest run` 7 文件 **55/55 通过** → `build + pack` 产出干净 zip
+
+### 阶段32：新增 CRX 签名打包能力 ✅
+- **新增** `scripts/pack-crx.mjs`：调用本机 Chrome `--pack-extension`（CRX3）完成签名
+  - 自动探测 Chrome（`Program Files` / `Program Files (x86)` / `LOCALAPPDATA` / macOS / Linux），支持 `CHROME_PATH` 覆盖
+  - 首次打包自动生成并落盘 `release/<name>-key.pem`；后续复用同一私钥 → 扩展 ID 稳定
+  - 打包前清理 `dist.crx` / `dist.pem` 残留，避免误用旧产物
+  - 由私钥 `SPKI DER` 的 SHA-256 前 16 字节推导扩展 ID（nibble → a-p）
+- **新增命令**：`npm run pack:crx`
+- **安全**：`.gitignore` 增加 `*.pem` / `*.crx`，私钥不入库
+- **实测验证**：
+  | 项 | 结果 |
+  |---|---|
+  | 产物 | `release/1password-clone-v2.0.0-m1.crx`（155,596 字节，CRX3） |
+  | CRX 头 | `magic=Cr24 version=3 headerSize=581` |
+  | 扩展 ID | 脚本输出 `imlpnogiekigmngdnmjiibkaaphfaiih`，与 CRX header 内 `crx_id`（`8cbfde684a86cd63dc9881a00f750887`）映射结果**完全一致** |
+- **README**：补充 CRX 打包流程、私钥保管要求、安装限制（Chrome 默认拦截非商店来源）与手动打包方式

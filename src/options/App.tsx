@@ -205,7 +205,6 @@ export const OptionsApp: React.FC = () => {
                     <p>🔒 AES-256-GCM：<b>每次加密换 12B 随机 IV</b>（不可配置）</p>
                     <p>🔒 DK 永远只活在 Background SW 闭包：<code>let __dk__</code></p>
                     <p>🔒 storage 仅 2 个 key：<code>__1p_meta__</code> + <code>__1p_vault_cipher__</code></p>
-                    <p>🔒 <code>v1.1 popup.js / popup.css / popup.html</code> 根目录三件套 0 行修改 ✅</p>
                   </div>
                 </section>
               </div>

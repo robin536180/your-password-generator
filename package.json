@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "lint": "eslint --ext .ts,.tsx src --max-warnings=0",
-    "pack": "cd dist && bestzip ../release/$npm_package_name-v$npm_package_version.zip ."
+    "pack": "node scripts/pack.mjs",
+    "pack:crx": "node scripts/pack-crx.mjs"
   },
   "dependencies": {
     "bestzip": "2.2.1",
