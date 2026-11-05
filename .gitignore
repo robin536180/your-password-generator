@@ -10,3 +10,5 @@ release
 !.vscode/settings.json
 coverage
 .trae/
+.harness/
+.dbg/
